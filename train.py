@@ -13,7 +13,7 @@ def main(args):
 
     # Initialize logging
     wandb.init(
-        project='belief-train',
+        project='belief-train_reproduction',
         name=args.name,
         config=args,
         save_code=True)
@@ -91,8 +91,8 @@ if __name__ == '__main__':
 
     # Architecture
     parser.add_argument('-C', '--cell', type=str, default='gru')
-    parser.add_argument('-H', '--hidden-size', type=int, default=32)
-    parser.add_argument('-S', '--num-layers', type=int, default=2)
+    parser.add_argument('-H', '--hidden_size', type=int, default=32)
+    parser.add_argument('-S', '--num_layers', type=int, default=2)
 
     # Retrain
     parser.add_argument('--load', type=str, default=None)
@@ -104,7 +104,7 @@ if __name__ == '__main__':
 
     # Algorithm
     parser.add_argument('--algorithm', type=str, default='drqn')
-    parser.add_argument('-E', '--num-episodes', type=int, default=1000)
+    parser.add_argument('-E', '--num-episodes', type=int, default=5000)
     parser.add_argument('-B', '--batch-size', type=int, default=32)
     parser.add_argument('-a', '--learning-rate', type=float, default=1e-3)
     parser.add_argument('-I', '--num-gradient-steps', type=int, default=10)

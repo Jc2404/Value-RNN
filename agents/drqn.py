@@ -293,7 +293,9 @@ class DRQN:
                     }
                 )
 
-                self.save(run_id, episode=episode)
+                if episode % (eval_period * 10) == 0:
+                    print(f'Saving at step {episode}...')
+                    self.save(run_id, episode=episode)
 
             # Update target
             if episode % target_period == 0:

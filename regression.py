@@ -7,11 +7,57 @@ from environments.irrelevant import Irrelevant
 
 from agents.drqn import DRQN
 
-from mine.mine import MutualInformationNeuralEstimator
 from utils import generate_hiddens_and_beliefs, get_run_statistic
 
 from argparse import ArgumentParser
 
+
+def fit_linear_probe(X, Y, add_bias=True, standardize=True):
+    """
+    X: [N, H] hidden
+    Y: [N, K] belief
+    """
+    device = X.device
+    if standardize:
+        mean = X.mean(0, keepdim=True)
+        std = X.std(0, keepdim=True) + 1e-6
+        Xn = (X - mean) / std
+    else:
+        mean, std = None, None
+        Xn = X
+
+    if add_bias:
+        ones = torch.ones(Xn.size(0), 1, device=device)
+        Xn = torch.cat([Xn, ones], dim=1)
+
+    # W = (X^T X)^(-1) X^T Y
+    res = torch.linalg.lstsq(Xn, Y)
+    W = res.solution
+    print(f"X: {Xn.shape}, Y: {Y.shape}, W: {W.shape}", flush = True)
+    return {
+        'W': W,
+        'mean': mean,
+        'std': std,
+        'add_bias': add_bias,
+    }
+
+def eval_linear_probe(X, Y, probe):
+    device = X.device
+    if probe['mean'] is not None:
+        Xn = (X - probe['mean']) / probe['std']
+    else:
+        Xn = X
+    if probe['add_bias']:
+        ones = torch.ones(Xn.size(0), 1, device=device)
+        Xn = torch.cat([Xn, ones], dim=1)
+    print(f"X: {Xn.shape}, Y: {Y.shape}", flush = True)
+    Yhat = Xn @ probe['W']
+
+    # R^2
+    num = ((Y - Yhat) ** 2).sum()
+    den = ((Y - Y.mean(0, keepdim=True)) ** 2).sum()
+    rsq = 1 - (num / den)
+    return rsq.item(), Yhat
 
 def main(args):
 
@@ -23,7 +69,7 @@ def main(args):
 
     # Initialize logging
     wandb.init(
-        project='belief-mi-ref',
+        project='belief-regression',
         name=args.name,
         config=config,
         save_code=True)
@@ -76,81 +122,58 @@ def main(args):
 
     print('Device:', device)
 
-    # Evaluate MI on all available weights
-    estimates = []
     print(config.episodes)
+    
     for episode in range(0, config.episodes + 1, args.mine_period):
 
+        # 1. load agent checkpoint
         agent.load(args.train_id, episode=episode)
         print('agent loaded')
 
+        # 2. sample data
         hiddens, beliefs = generate_hiddens_and_beliefs(
-            agent, environment, num_samples=args.mine_num_samples,
-            epsilon=args.epsilon, approximate=args.approximate)
+            agent,
+            environment,
+            num_samples=args.mine_num_samples,
+            epsilon=args.epsilon,
+            approximate=args.approximate,
+        )
+        print(f'generated hiddens of shape {hiddens.shape} and beliefs {beliefs}')
 
-        print(f'generated for {episode}')
+        # 3. move to device
+        hiddens = hiddens.to(device)     # [N, H]
+        beliefs = tuple(b.to(device) for b in beliefs)
+        # 4. train / eval split
+        N = hiddens.size(0)
+        perm = torch.randperm(N, device=device)
+        hiddens = hiddens[perm]
+        beliefs = tuple(b[perm] for b in beliefs)
+        split = int(N * 0.8)
+        X_train = hiddens[:split]
+        X_test  = hiddens[split:]
 
-        if len(beliefs) == 1 and args.belief_part is not None:
-            print("No estimation of the MI on belief parts")
-            return
+        for part_idx, belief_part in enumerate(beliefs):
 
-        representation_sizes = []
-        belief_sizes = []
+            Y_train = belief_part[:split]
+            Y_test  = belief_part[split:]
 
-        for belief_part in beliefs:
+            # 5. fit on train
+            probe = fit_linear_probe(
+                X_train,
+                Y_train,
+                standardize=True,
+                add_bias=True,
+            )
 
-            belief_sizes.append(belief_part.size(-1))
+            # 6. eval on test
+            rsq, _ = eval_linear_probe(X_test, Y_test, probe)
 
-            if belief_part.ndim == 2:
-                representation_sizes.append(None)
-            elif belief_part.ndim == 3:
-                representation_sizes.append(args.representation_size)
-            else:
-                raise ValueError('Expected 2 or 3 dimensions for the belief '
-                                 'representation')
-
-        mine = MutualInformationNeuralEstimator(
-            hs_sizes=hiddens.size(-1), belief_sizes=belief_sizes,
-            hidden_size=args.mine_hidden_size, num_layers=args.mine_num_layers,
-            alpha=args.mine_alpha, representation_sizes=representation_sizes,
-            belief_part=args.belief_part, device=device)
-
-        mine.optimize(
-            hiddens, beliefs, num_epochs=args.mine_num_epochs,
-            logger=wandb.log, learning_rate=args.mine_learning_rate,
-            batch_size=args.mine_batch_size, lambd=args.mine_lambda,
-            valid_size=args.valid_size)
-        print('mine calculated')
-        mine.save(wandb.run.id, episode=episode)
-
-        if not args.train_set:
-            hiddens, beliefs = generate_hiddens_and_beliefs(
-                agent, environment, num_samples=args.mine_num_samples,
-                epsilon=args.epsilon, approximate=args.approximate)
-
-        mi = mine.estimate(hiddens, beliefs)
-
-        if args.belief_part is None:
-            mi_part_key = 'mine_estimate/mi'
-        else:
-            mi_part_key = f'mine_estimate/mi-{args.belief_part}'
-
-        # Do not mix logging when epsilon
-        if args.epsilon != 0.0:
-            mi_part_key += f'-{args.epsilon}'
-
-        estimate = {'train/episode': episode, mi_part_key: mi}
-        wandb.log(estimate)
-        estimates.append(estimate)
-
-        print(f'Episode {episode}\n\tMI = {mi}')
+            key = f"regression/rsq-{part_idx}"
+            wandb.log({'train/episode': episode, key: rsq})
+            print(f"[episode {episode}] {key} = {rsq:.4f}")
 
     wandb.finish()
 
-    wandb.init(project='belief-train_reproduction', id=args.train_id, resume='must')
-    for estimate in estimates:
-        wandb.log(estimate)
-    wandb.finish()
 
 
 if __name__ == '__main__':
@@ -168,7 +191,7 @@ if __name__ == '__main__':
     parser.add_argument('--mine_num_layers', type=int, default=2)
     parser.add_argument('--mine_hidden_size', type=int, default=256)
     parser.add_argument('--mine_alpha', type=float, default=0.01)
-    parser.add_argument('--mine_num_epochs', type=int, default=200)
+    parser.add_argument('--mine_num_epochs', type=int, default=100)
     parser.add_argument('--mine_batch_size', type=int, default=1024)
     parser.add_argument('--mine_learning_rate', type=float, default=1e-3)
     parser.add_argument('--mine_lambda', type=float, default=0.0)

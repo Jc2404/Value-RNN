@@ -47,7 +47,7 @@ def generate_hiddens_and_beliefs(agent, environment, num_samples, epsilon=0.2,
             return_hiddens=True,
             return_beliefs=True,
         )
-
+    
         # TODO: this should be modified to sample a time step first
         # TODO: this should be modified to allow sampling past terminal states
 
@@ -59,6 +59,7 @@ def generate_hiddens_and_beliefs(agent, environment, num_samples, epsilon=0.2,
             t = torch.randint(len(hh), ()).item()
             hiddens.append(hh[t])
             beliefs.append([bi for bi in bb[t]])
+    print(f'sampled {num_samples}', flush = True)
 
     hiddens = hiddens[:num_samples]
     beliefs = beliefs[:num_samples]
@@ -67,6 +68,7 @@ def generate_hiddens_and_beliefs(agent, environment, num_samples, epsilon=0.2,
     for belief in beliefs:
         for i, b in enumerate(belief):
             tuple_of_beliefs[i].append(b)
+    print('beliefs generated', flush = True)
 
     return torch.stack(hiddens), tuple(map(torch.stack, tuple_of_beliefs))
 
@@ -106,11 +108,13 @@ def get_run_statistic(run_id):
         The configuration of the considered run.
     """
     api = wandb.Api()
-    run = api.run(f'gsprd/belief-train/{run_id}')
+    run = api.run(f'jc2404-university-of-cambridge/belief-train_reproduction/{run_id}')
 
+    '''
     if run.state != 'finished':
         raise ValueError(
             f'The training session {run_id} has not finished its execution.')
+    '''
 
     config = {k: v for k, v in run.config.items() if not k.startswith('_')}
     summary = {
