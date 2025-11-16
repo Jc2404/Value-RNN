@@ -25,6 +25,19 @@ class SoftmaxProbe(nn.Module):
         logits = self.linear(x)
         return F.log_softmax(logits, dim=-1)
 
+class MLPProbe(nn.Module):
+    def __init__(self, in_dim, out_dim, hidden_dim = 128, add_bias=True, dropout = 0.0):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim, bias=add_bias),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, out_dim, bias=add_bias)
+        )
+
+    def forward(self, X):
+        logits = self.net(X)
+        return F.log_softmax(logits, dim=-1)
 
 def fit_softmax_probe(
     X,
@@ -34,6 +47,7 @@ def fit_softmax_probe(
     epochs=200,
     lr=1e-2,
     batch_size=1024,
+    use_MLP = True
 ):
     """
     X: [N, H] hidden states
@@ -51,13 +65,20 @@ def fit_softmax_probe(
     else:
         mean, std = None, None
         Xn = X
-
-    probe = SoftmaxProbe(H, K, add_bias=add_bias).to(device)
+    
+    if use_MLP:
+        print("Using MLP for fitting")
+        probe = MLPProbe(H, K, add_bias=add_bias).to(device)
+    else:
+        print("Using Linear fitting")
+        probe = SoftmaxProbe(H, K, add_bias=add_bias).to(device)
     opt = torch.optim.Adam(probe.parameters(), lr=lr)
     criterion = nn.KLDivLoss(reduction="batchmean")
 
-    for _ in range(epochs):
+    for ep in range(epochs):
         perm = torch.randperm(N, device=device)
+        total_loss = 0.0
+        num_batches = 0
         for i in range(0, N, batch_size):
             idx = perm[i:i+batch_size]
             xb = Xn[idx]
@@ -70,6 +91,13 @@ def fit_softmax_probe(
             opt.zero_grad()
             loss.backward()
             opt.step()
+
+            total_loss += loss.item()
+            num_batches += 1
+
+        if (ep + 1) % 50 == 0 or ep == 0:
+            avg_kl = total_loss / max(num_batches, 1)
+            print(f"[Epoch {ep+1}/{epochs}] train_KL={avg_kl:.4f}")
 
     return {
         "probe": probe,
@@ -100,7 +128,7 @@ def eval_softmax_probe(X, Y, state):
     # cross-entropy = - E_p [log q]
     ce = -(Y * log_probs).sum(dim=-1).mean().item()
 
-    return kl, ce, probs
+    return kl, ce, probs, log_probs, Y
 
 
 
@@ -112,7 +140,7 @@ def main(args):
     config = vars(train_args) | vars(args)
 
     wandb.init(
-        project='belief-regression',
+        project='belief-softmax',
         name=args.name,
         config=config,
         save_code=True,
@@ -170,7 +198,7 @@ def main(args):
     print(config.episodes)
 
     for episode in range(0, config.episodes + 1, args.mine_period):
-
+        
         # load agent checkpoint
         agent.load(args.train_id, episode=episode)
         print('agent loaded')
@@ -212,10 +240,22 @@ def main(args):
                 epochs=args.probe_epochs,
                 lr=args.probe_lr,
                 batch_size=args.probe_batch_size,
+                use_MLP = args.use_MLP
             )
 
-            # evaluate on test split
-            kl, ce, _ = eval_softmax_probe(X_test, Y_test, probe_state)
+            kl, ce, probs, log_probs, target = eval_softmax_probe(X_test, Y_test, probe_state)
+            # look at sample of it
+            print(f"episode {episode}")
+            print("x1", X_test[0])
+            print("y1", target[0])
+            print("yhat1", probs[0])
+            print("x2", X_test[1])
+            print("y2", target[1])
+            print("yhat2", probs[1])
+            print("x3", X_test[2])
+            print("y3", target[2])
+            print("yhat3", probs[2])
+            print(f"kl = {kl}, ce = {ce}")
 
             # log to wandb
             wandb.log({
@@ -237,12 +277,13 @@ if __name__ == '__main__':
 
     # how many samples we gather for probing each time
     parser.add_argument('--mine_num_samples', type=int, default=10000)
-    parser.add_argument('--mine_period', type=int, default=100)
+    parser.add_argument('--use_MLP', type=bool, default=True)
+    parser.add_argument('--mine_period', type=int, default=1000)
     parser.add_argument('--approximate', action='store_true')
     parser.add_argument('--epsilon', type=float, default=0.0)
 
     # probe training hyperparams
-    parser.add_argument('--probe_epochs', type=int, default=200)
+    parser.add_argument('--probe_epochs', type=int, default=300)
     parser.add_argument('--probe_lr', type=float, default=1e-2)
     parser.add_argument('--probe_batch_size', type=int, default=1024)
 

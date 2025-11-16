@@ -15,7 +15,7 @@ class Namespace:
 
 
 def generate_hiddens_and_beliefs(agent, environment, num_samples, epsilon=0.2,
-                                 approximate=False):
+                                 approximate=False, include_trajectory=False):
     """
     Samples joint hidden states and beliefs using an epsilon-greedy policy
     based on the agent to sample the trajectories in the environment.
@@ -41,7 +41,7 @@ def generate_hiddens_and_beliefs(agent, environment, num_samples, epsilon=0.2,
     """
     hiddens, beliefs = [], []
     while len(hiddens) < num_samples:
-        _, hh, bb = agent.play(
+        tra, hh, bb = agent.play(
             environment,
             epsilon=epsilon,
             return_hiddens=True,
