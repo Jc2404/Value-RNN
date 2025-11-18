@@ -287,18 +287,5 @@ if __name__ == '__main__':
     parser.add_argument('--probe_lr', type=float, default=1e-2)
     parser.add_argument('--probe_batch_size', type=int, default=1024)
 
-    # keep other args for compatibility / unused
-    parser.add_argument('--mine_num_layers', type=int, default=2)
-    parser.add_argument('--mine_hidden_size', type=int, default=256)
-    parser.add_argument('--mine_alpha', type=float, default=0.01)
-    parser.add_argument('--mine_num_epochs', type=int, default=100)
-    parser.add_argument('--mine_batch_size', type=int, default=1024)
-    parser.add_argument('--mine_learning_rate', type=float, default=1e-3)
-    parser.add_argument('--mine_lambda', type=float, default=0.0)
-    parser.add_argument('--representation_size', type=int, default=16)
-    parser.add_argument('--belief_part', type=int, default=None)
-    parser.add_argument('--valid_size', type=float, default=0.2)
-    parser.add_argument('--train_set', action='store_true')
-
     args = parser.parse_args()
     main(args)

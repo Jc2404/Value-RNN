@@ -108,7 +108,7 @@ def get_run_statistic(run_id):
         The configuration of the considered run.
     """
     api = wandb.Api()
-    run = api.run(f'jc2404-university-of-cambridge/belief-train/{run_id}')
+    run = api.run(f'jc2404-university-of-cambridge/belief-train_reproduction/{run_id}')
 
     '''
     if run.state != 'finished':
