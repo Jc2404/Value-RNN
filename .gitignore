@@ -2,3 +2,4 @@ wandb
 weights
 __pycache__/
 res.txt
+*.pyc

@@ -5,6 +5,7 @@ from argparse import ArgumentParser
 from environments.tmaze import TMaze
 from environments.hike import MountainHike
 from environments.irrelevant import Irrelevant
+from environments.starkweather import StarkweatherEnv
 
 from agents.drqn import DRQN
 
@@ -35,6 +36,14 @@ def main(args):
         environment = MountainHike(
             variations=config.variations,
             bayes=False,
+        )
+    elif config.environment == 'starkweather':
+        environment = StarkweatherEnv(
+            p_omission=config.p_omission,
+            bin_size = config.bin_size,
+            iti_hazard = config.iti_hazard,
+            iti_min = config.iti_min,
+            nITI_microstates = config.nITI_microstates,
         )
     else:
         raise NotImplementedError(f'Unknown environment {config.environment}')
@@ -127,6 +136,14 @@ if __name__ == '__main__':
     # Environment: Mountain Hike
     hike = environment_subparser.add_parser('hike')
     hike.add_argument('--variations', type=str, default=None)
+
+    # Environment: StarkWeather
+    starkweather = environment_subparser.add_parser('starkweather')
+    starkweather.add_argument('--p_omission', type = float, default = 0.1)
+    starkweather.add_argument('--bin_size', type = float, default = 0.2)
+    starkweather.add_argument('--iti_hazard', type = float, default = 1/65)
+    starkweather.add_argument('--iti_min', type = float, default = 0)
+    starkweather.add_argument('--nITI_microstates', type = int, default = 10)
 
     # Parse command line arguments
     args = parser.parse_args()
