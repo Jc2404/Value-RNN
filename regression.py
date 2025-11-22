@@ -174,12 +174,30 @@ def main(args):
                 add_bias=True,
             )
 
+            rsq_train, Yhat_train = eval_linear_probe(X_train, Y_train, probe)
+            train_mse = torch.mean((Y_train - Yhat_train) ** 2).item()
+
             # 6. eval on test
             rsq, _ = eval_linear_probe(X_test, Y_test, probe)
 
-            key = f"regression/rsq-{part_idx}"
-            wandb.log({'train/episode': episode, key: rsq})
-            print(f"[episode {episode}] {key} = {rsq:.4f}")
+
+            key_rsq_test = f"regression/rsq-{part_idx}"
+            key_rsq_train = f"regression/rsq-train-{part_idx}"
+            key_loss_train = f"loss/train-{part_idx}"
+
+            wandb.log({
+                'train/episode': episode,
+                key_rsq_test: rsq,
+                key_rsq_train: rsq_train,
+                key_loss_train: train_mse,
+            })
+
+            print(
+                f"[episode {episode}] "
+                f"{key_rsq_test} = {rsq:.4f}, "
+                f"{key_rsq_train} = {rsq_train:.4f}, "
+                f"{key_loss_train} = {train_mse:.6f}"
+            )
 
     wandb.finish()
 
@@ -200,7 +218,7 @@ if __name__ == '__main__':
     parser.add_argument('--mine_num_layers', type=int, default=2)
     parser.add_argument('--mine_hidden_size', type=int, default=256)
     parser.add_argument('--mine_alpha', type=float, default=0.01)
-    parser.add_argument('--mine_num_epochs', type=int, default=100)
+    parser.add_argument('--mine_num_epochs', type=int, default=300)
     parser.add_argument('--mine_batch_size', type=int, default=1024)
     parser.add_argument('--mine_learning_rate', type=float, default=1e-3)
     parser.add_argument('--mine_lambda', type=float, default=0.0)

@@ -244,26 +244,22 @@ def main(args):
             )
 
             kl, ce, probs, log_probs, target = eval_softmax_probe(X_test, Y_test, probe_state)
+            kl_train, ce_train, _, _, _ = eval_softmax_probe(X_train, Y_train, probe_state)
             # look at sample of it
             print(f"episode {episode}")
-            print("x1", X_test[0])
-            print("y1", target[0])
-            print("yhat1", probs[0])
-            print("x2", X_test[1])
-            print("y2", target[1])
-            print("yhat2", probs[1])
-            print("x3", X_test[2])
-            print("y3", target[2])
-            print("yhat3", probs[2])
-            print(f"kl = {kl}, ce = {ce}")
-
+            # print("x1", X_test[0])
+            # print("y1", target[0])
+            # print("yhat1", probs[0])
+            
             # log to wandb
             wandb.log({
                 'train/episode': episode,
                 f'probe/kl-{part_idx}': kl,
                 f'probe/ce-{part_idx}': ce,
+                f'probe/kl_train-{part_idx}' :kl_train,
+                f'probe/ce_train-{part_idx}' :ce_train,
             })
-            print(f"[episode {episode}] belief {part_idx}: KL={kl:.4f}  CE={ce:.4f}")
+            print(f"[episode {episode}] belief {part_idx}: KL={kl:.4f},  CE={ce:.4f}, training_kl = {kl_train}, training_ce = {ce_train}")
 
     wandb.finish()
 
