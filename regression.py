@@ -226,7 +226,8 @@ if __name__ == '__main__':
     parser.add_argument('--mine_period', type=int, default=100)
     parser.add_argument('--representation_size', type=int, default=16)
     parser.add_argument('--belief_part', type=int, default=None)
-    parser.add_argument('--standardize', type=bool, default=True)
+    parser.add_argument('--no-standardize', action='store_false', dest='standardize')
+    parser.set_defaults(standardize=True)
 
     parser.add_argument('--valid_size', type=float, default=0.2)
     parser.add_argument('--train_set', action='store_true')
