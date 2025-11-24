@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from environments.tmaze import TMaze
 from environments.hike import MountainHike
 from environments.irrelevant import Irrelevant
+from environments.starkweather import StarkweatherEnv
 
 from agents.drqn import DRQN
 
@@ -162,6 +163,14 @@ def main(args):
             bayes=True,
             variations=train_args.variations,
         )
+    elif config.environment == 'starkweather':
+        environment = StarkweatherEnv(
+            p_omission= train_args.p_omission,
+            bin_size = train_args.bin_size,
+            iti_hazard = train_args.iti_hazard,
+            iti_min = train_args.iti_min,
+            nITI_microstates = train_args.nITI_microstates,
+        )
     else:
         environment = train_args.environment
         raise NotImplementedError(f'Unknown environment {environment}')
@@ -250,7 +259,7 @@ def main(args):
             # print("x1", X_test[0])
             # print("y1", target[0])
             # print("yhat1", probs[0])
-            
+
             # log to wandb
             wandb.log({
                 'train/episode': episode,
@@ -274,7 +283,7 @@ if __name__ == '__main__':
     # how many samples we gather for probing each time
     parser.add_argument('--mine_num_samples', type=int, default=10000)
     parser.add_argument('--use_MLP', type=bool, default=True)
-    parser.add_argument('--mine_period', type=int, default=1000)
+    parser.add_argument('--mine_period', type=int, default=100)
     parser.add_argument('--approximate', action='store_true')
     parser.add_argument('--epsilon', type=float, default=0.0)
 

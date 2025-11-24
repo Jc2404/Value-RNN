@@ -24,6 +24,7 @@ def fit_linear_probe(X, Y, add_bias=True, standardize=True):
         std = X.std(0, keepdim=True) + 1e-6
         Xn = (X - mean) / std
     else:
+        print('Not normalizing the inputs.')
         mean, std = None, None
         Xn = X
 
@@ -170,7 +171,7 @@ def main(args):
             probe = fit_linear_probe(
                 X_train,
                 Y_train,
-                standardize=True,
+                standardize=args.standardize,
                 add_bias=True,
             )
 
@@ -225,6 +226,7 @@ if __name__ == '__main__':
     parser.add_argument('--mine_period', type=int, default=100)
     parser.add_argument('--representation_size', type=int, default=16)
     parser.add_argument('--belief_part', type=int, default=None)
+    parser.add_argument('--standardize', type=bool, default=True)
 
     parser.add_argument('--valid_size', type=float, default=0.2)
     parser.add_argument('--train_set', action='store_true')
