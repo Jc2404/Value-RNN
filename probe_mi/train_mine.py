@@ -4,8 +4,8 @@ from argparse import ArgumentParser
 
 from mine.mine import MutualInformationNeuralEstimator
 from utils import generate_hiddens_and_beliefs, get_run_statistic
-from probe.build_env import select_device, build_environment, build_agent
-from probe.mine_io import MineConfig, save_mine_config
+from probe_mi.build_env import select_device, build_environment, build_agent
+from probe_mi.mine_io import MineConfig, save_mine_config
 
 
 def main(args):

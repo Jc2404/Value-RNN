@@ -3,3 +3,8 @@ weights
 __pycache__/
 res.txt
 *.pyc
+plots
+plots_reward_pred
+test.py
+test2.py
+test3.py

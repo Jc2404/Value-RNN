@@ -117,6 +117,13 @@ class DRQN:
         for _ in range(environment.horizon()):
 
             tau_t = trajectory.get_last_observed().view(1, 1, -1)
+            device = next(self.Q.parameters()).device
+            tau_t = tau_t.to(device)
+            if hidden_states is not None:
+                if isinstance(hidden_states, (tuple, list)):
+                    hidden_states = tuple(h.to(device) for h in hidden_states)
+                else:
+                    hidden_states = hidden_states.to(device)
             with torch.no_grad():
                 values, hidden_states = self.Q(tau_t, hidden_states)
 

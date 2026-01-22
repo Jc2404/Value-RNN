@@ -6,7 +6,7 @@ from environments.tmaze import TMaze
 from environments.hike import MountainHike
 from environments.irrelevant import Irrelevant
 from environments.starkweather import StarkweatherEnv
-
+from environments.tiger import Tiger
 from agents.drqn import DRQN
 
 
@@ -44,6 +44,15 @@ def main(args):
             iti_hazard = config.iti_hazard,
             iti_min = config.iti_min,
             nITI_microstates = config.nITI_microstates,
+        )
+    elif config.environment == 'tiger':
+        environment = Tiger(
+            listen_accuracy=config.listen_accuracy,
+            reward_listen=config.reward_listen,
+            reward_correct=config.reward_correct,
+            reward_wrong=config.reward_wrong,
+            horizon=config.horizon,
+            bayes=False,
         )
     else:
         raise NotImplementedError(f'Unknown environment {config.environment}')
@@ -108,7 +117,7 @@ if __name__ == '__main__':
     parser.add_argument('--load-at', type=int, default=None)
 
     # Evaluation
-    parser.add_argument('--eval-period', type=int, default=10)
+    parser.add_argument('--eval-period', type=int, default=5)
     parser.add_argument('--num-rollouts', type=int, default=50)
 
     # Algorithm
@@ -144,6 +153,14 @@ if __name__ == '__main__':
     starkweather.add_argument('--iti_hazard', type = float, default = 1/65)
     starkweather.add_argument('--iti_min', type = float, default = 0)
     starkweather.add_argument('--nITI_microstates', type = int, default = 10)
+
+    # Environment: Tiger
+    tiger = environment_subparser.add_parser('tiger')
+    tiger.add_argument('--listen-accuracy', type=float, default=0.85)
+    tiger.add_argument('--reward-listen', type=float, default=-1.0)
+    tiger.add_argument('--reward-correct', type=float, default=10.0)
+    tiger.add_argument('--reward-wrong', type=float, default=-100.0)
+    tiger.add_argument('--horizon', type=int, default=20)
 
     # Parse command line arguments
     args = parser.parse_args()
