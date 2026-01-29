@@ -141,7 +141,7 @@ def main(args):
     config = vars(train_args) | vars(args)
 
     wandb.init(
-        project='belief-softmax',
+        project='belief-ll',
         name=args.name,
         config=config,
         save_code=True,

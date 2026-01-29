@@ -6,6 +6,10 @@ import torch.nn.functional as F
 from .rnns import RNNS
 from .memory import Trajectory, ReplayBuffer
 from utils import print_stats
+from environments.tmaze import TMaze
+from environments.hike import MountainHike
+from environments.irrelevant import Irrelevant
+from environments.starkweather import StarkweatherEnv
 
 from random import random
 
@@ -371,3 +375,93 @@ class DRQN:
         path = f'weights/{run_id}-{episode}-{{}}.pth'
         self.Q.load_state_dict(torch.load(path.format('Q')))
         self.Q_tar.load_state_dict(torch.load(path.format('Q_tar')))
+
+    def play_full(
+        self,
+        environment,
+        epsilon,
+        return_hiddens=False,
+        return_beliefs=False,
+        return_states=False,
+    ):
+        """
+        Modified version of the play() function to return the true states.
+
+        Arguments:
+        - environment: Environment
+            The environment on which to play.
+        - epsilon: float
+            The exploration rate at each time step.
+        - return_hiddens: bool
+            Whether to return the hidden states along with the trajectory.
+        - return_beliefs: bool
+            Whether to return the beliefs along with the trajectory.
+
+        Returns:
+        - trajectory: Trajectory
+            The trajectory resulting from the interaction with the environment.
+        - hiddens: list
+            The list of flattened hidden states at each time step of the trajectory.
+        - beliefs: list
+            The list of beliefs at each time step of the trajectory.
+        """
+        hiddens, beliefs, states = [], [], []
+
+        o = environment.reset()
+        trajectory = Trajectory(
+            environment.action_size,
+            environment.observation_size,
+        )
+
+        trajectory.add(None, None, o)
+
+        hidden_states = None
+        for _ in range(environment.horizon()):
+
+            tau_t = trajectory.get_last_observed().view(1, 1, -1)
+            device = next(self.Q.parameters()).device
+            tau_t = tau_t.to(device)
+            if hidden_states is not None:
+                if isinstance(hidden_states, (tuple, list)):
+                    hidden_states = tuple(h.to(device) for h in hidden_states)
+                else:
+                    hidden_states = hidden_states.to(device)
+            with torch.no_grad():
+                values, hidden_states = self.Q(tau_t, hidden_states)
+
+            if return_hiddens:
+                hiddens.append(hidden_states[0].detach().flatten().clone())
+
+            if return_beliefs:
+                beliefs.append(environment.get_belief())
+
+            if return_states:
+                if isinstance(environment, (TMaze)):
+                    states.append(torch.as_tensor(environment.position, dtype=torch.long))
+                elif isinstance(environment, StarkweatherEnv):
+                    states.append(torch.as_tensor(environment.state, dtype=torch.long))
+                else:
+                    raise NotImplementedError(f'Not implemented environment {environment}')
+
+            if random() < epsilon:
+                a = environment.exploration()
+            else:
+                a = values.flatten().argmax().item()
+
+            o, r, d = environment.step(a)
+
+            trajectory.add(a, r, o, terminal=d)
+
+            if d:
+                break
+
+        return_values = (trajectory,)
+
+        if return_hiddens:
+            return_values += (hiddens,)
+        if return_beliefs:
+            return_values += (beliefs,)
+        if return_states:
+            return_values += (states,)
+
+        return return_values

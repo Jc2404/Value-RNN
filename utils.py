@@ -72,6 +72,61 @@ def generate_hiddens_and_beliefs(agent, environment, num_samples, epsilon=0.2,
 
     return torch.stack(hiddens), tuple(map(torch.stack, tuple_of_beliefs))
 
+def generate_hiddens_and_states(agent, environment, num_samples, epsilon=0.2,
+                                 approximate=False, include_trajectory=False):
+    """
+    Samples joint hidden states and beliefs using an epsilon-greedy policy
+    based on the agent to sample the trajectories in the environment.
+
+    Arguments
+    - agent: Agent
+        The agent whose epsilon-greedy policy is used.
+    - environment: Environment
+        The environment in which the trajectories are generated.
+    - num_samples: int
+        The number of hidden states and beliefs to generate.
+    - epsilon: float
+        The exploration rate of the epsilon-greedy policy.
+    - approximate: bool
+        Whether to use a faster approximation of the distributions where all
+        beliefs and hidden states generated in any trajectory are returned.
+
+    Returns
+    - hiddens: tensor
+        a batch of hidden states from the successive trajectories.
+    - beliefs: tuple of tensors
+        a batch of beliefs from the successive beliefs.
+    """
+    hiddens, states = [], []
+    while len(hiddens) < num_samples:
+        tra, hh, ss = agent.play_full(
+            environment,
+            epsilon=epsilon,
+            return_hiddens=True,
+            return_states=True,
+        )
+    
+        # TODO: this should be modified to sample a time step first
+        # TODO: this should be modified to allow sampling past terminal states
+
+        if approximate:
+            for h, s in zip(hh, ss):
+                hiddens.append(h)
+                states.append(s)
+        else:
+            t = torch.randint(len(hh), ()).item()
+            hiddens.append(hh[t])
+            states.append(ss[t])
+    print(f'sampled {num_samples}', flush = True)
+
+    hiddens = hiddens[:num_samples]
+    states = states[:num_samples]
+    print(states)
+
+    print('states generated', flush = True)
+
+    return torch.stack(hiddens), torch.stack(states)
+
 
 def print_stats(stats):
     """
