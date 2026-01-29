@@ -1,6 +1,0 @@
-=== softmax trace+probe run_id=40bz7rgs train_id=pjmvisza ===
-
-
-########################################
-# CHECKPOINT EPISODE 0
-########################################
