@@ -121,7 +121,6 @@ def generate_hiddens_and_states(agent, environment, num_samples, epsilon=0.2,
 
     hiddens = hiddens[:num_samples]
     states = states[:num_samples]
-    print(states)
 
     print('states generated', flush = True)
 

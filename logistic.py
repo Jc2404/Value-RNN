@@ -141,7 +141,7 @@ def main(args):
     config = vars(train_args) | vars(args)
 
     wandb.init(
-        project='belief-ll',
+        project='belief-softmax',
         name=args.name,
         config=config,
         save_code=True,
@@ -282,7 +282,7 @@ if __name__ == '__main__':
 
     # how many samples we gather for probing each time
     parser.add_argument('--mine_num_samples', type=int, default=10000)
-    parser.add_argument('--use_MLP', type=bool, default=True)
+    parser.add_argument('--use_MLP', action='store_true')
     parser.add_argument('--mine_period', type=int, default=100)
     parser.add_argument('--approximate', action='store_true')
     parser.add_argument('--epsilon', type=float, default=0.0)
