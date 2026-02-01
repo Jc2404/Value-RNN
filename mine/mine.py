@@ -65,7 +65,7 @@ class LogMeanExpWithGradDenom(torch.autograd.Function):
         """
         ctx.save_for_backward(T_pom, grad_denom)
 
-        n = torch.tensor(T_pom.size(0))
+        n = torch.tensor(T_pom.size(0), device=T_pom.device, dtype = T_pom.dtype)
         return T_pom.logsumexp(dim=(0, 1)) - torch.log(n)
 
     @staticmethod
@@ -131,7 +131,7 @@ class LogMeanExpWithEMAGradDenom:
         if use_ema:
             return LogMeanExpWithGradDenom.apply(T_pom, self.T_pom_exp_ma)
 
-        n = torch.tensor(T_pom.size(0))
+        n = torch.tensor(T_pom.size(0), device = T_pom.device, dtype = T_pom.dtype)
         return T_pom.logsumexp(dim=(0, 1)) - torch.log(n)
 
 
@@ -382,14 +382,18 @@ class MutualInformationNeuralEstimator(nn.Module):
         if self.belief_part is not None:
             beliefs = (beliefs[self.belief_part],)
 
-        perm_pom_1 = torch.randperm(hiddens.size(0))
-        perm_pom_2 = torch.randperm(hiddens.size(0))
+        device = self.device
+        hiddens = hiddens.to(device)
+        beliefs = tuple(b.to(device) for b in beliefs)
+
+        perm_pom_1 = torch.randperm(hiddens.size(0), device=device)
+        perm_pom_2 = torch.randperm(hiddens.size(0), device=device)
 
         hiddens_marginal = hiddens[perm_pom_1, :]
         beliefs_marginal = tuple(belief_part[perm_pom_2, ...]
                                  for belief_part in beliefs)
 
-        self.cpu()
+        self.eval()
         with torch.no_grad():
             T_joint, T_pom_logmeanexp = self.forward(
                 hiddens, beliefs, hiddens_marginal, beliefs_marginal,

@@ -207,7 +207,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = ArgumentParser(description="Protocol B: refit MINE separately on each modified env variant.")
+    parser = ArgumentParser(description="refit MINE separately on each modified env variant.")
     parser.add_argument("name", type=str, nargs="?", default=None)
     parser.add_argument("train_id", type=str)
 
