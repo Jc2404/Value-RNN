@@ -57,11 +57,11 @@ def pick_variants(train_args, args):
 
     if env_name == "tmaze":
         if args.test_length:
-            for L in [30, 40, 50]:
+            for L in [45, 49, 50, 51, 55]:
                 variants.append((f"tmaze_length={L}", {"length": L}))
             return variants
         if args.test_stochasticity:
-            for s in [0.1, 0.2, 0.3]:
+            for s in [0, 0.05, 0.1, 0.15]:
                 variants.append((f"tmaze_stochasticity={s}", {"stochasticity": s}))
             return variants
 
@@ -73,7 +73,7 @@ def pick_variants(train_args, args):
 
     if env_name == "starkweather":
         if args.test_p_omission:
-            for p in [0.0, 0.1, 0.2, 0.3]:
+            for p in [0.0, 0.05, 0.08, 0.1, 0.12, 0.15, 0.2]:
                 variants.append((f"starkweather_p_omission={p}", {"p_omission": p}))
             return variants
         if args.test_bin_size:
