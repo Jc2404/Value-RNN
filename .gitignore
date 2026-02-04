@@ -11,3 +11,4 @@ test3.py
 agents/__pycache__/
 regression_weights
 report/
+mine/__pycache__/

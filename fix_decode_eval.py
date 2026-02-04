@@ -292,7 +292,7 @@ def safelog_np(x):
     return np.log(y)
 
 
-def fit_state_decoder_sklearn(X_train_t, y_train_t, standardize=True, C=1.0, class_weight=None):
+def fit_state_decoder_sklearn(X_train_t, y_train_t, K, standardize=True, C=1.0, class_weight=None):
     """
     Faithful to decode_X_from_y_fit:
       - StandardScaler (fit on train)
@@ -301,6 +301,11 @@ def fit_state_decoder_sklearn(X_train_t, y_train_t, standardize=True, C=1.0, cla
     X_train = X_train_t.detach().cpu().numpy()
     y_train = y_train_t.detach().cpu().numpy().astype(int)
 
+    if y_train.min() < 0 or y_train.max() >= K:
+        raise ValueError(f"y_train out of range for K={K}: "
+                         f"min={y_train.min()}, max={y_train.max()}")
+
+    # standardize on train
     if standardize:
         scaler = preprocessing.StandardScaler().fit(X_train)
         Xs = scaler.transform(X_train)
@@ -309,46 +314,68 @@ def fit_state_decoder_sklearn(X_train_t, y_train_t, standardize=True, C=1.0, cla
         Xs = X_train
 
     clf = LogisticRegression(
-        multi_class="multinomial",
-        max_iter=int(1e4),
         C=C,
         class_weight=class_weight,
     )
     clf.fit(Xs, y_train)
-    return {"scaler": scaler, "clf": clf}
+
+    return {"scaler": scaler, "clf": clf, "K": K}
 
 
-def eval_state_decoder_sklearn(X_t, y_t, mdl):
-    """
-    Faithful to decode_X_from_y_eval:
-      - pte_hat = softmax(decision_function)
-      - LL = mean log p(true_class)
-      - pcor = accuracy*100
-      - phat_mean = mean p_hat conditional on true class
-    """
-    X = X_t.detach().cpu().numpy()
-    y = y_t.detach().cpu().numpy().astype(int)
+def eval_state_decoder_sklearn(X, y, mdl):
+    K = int(mdl["K"])
+    clf = mdl["clf"]
+    scaler = mdl["scaler"]
 
-    if mdl["scaler"] is not None:
-        X = mdl["scaler"].transform(X)
+    # to numpy
+    if hasattr(X, "detach"):
+        X = X.detach().cpu().numpy()
+    else:
+        X = np.asarray(X)
 
-    logits = mdl["clf"].decision_function(X)
-    pte_hat = softmax(logits, axis=-1)
-    if pte_hat.ndim == 1:
-        pte_hat = np.vstack([pte_hat, 1 - pte_hat]).T
+    if hasattr(y, "detach"):
+        y = y.detach().cpu().numpy()
+    else:
+        y = np.asarray(y)
 
-    yhat = np.argmax(pte_hat, axis=1)
-    classes = np.unique(y)
+    y = y.astype(int).reshape(-1)
 
-    LL = np.hstack([safelog_np(pte_hat[y == c, c]) for c in classes]).mean()
+    # sanity
+    if y.min() < 0 or y.max() >= K:
+        raise ValueError(f"y out of range for K={K}: min={y.min()}, max={y.max()}")
+
+    if scaler is not None:
+        X = scaler.transform(X)
+
+    # probs for trained classes only: shape [N, K_trained]
+    p_trained = clf.predict_proba(X)
+    trained_classes = clf.classes_.astype(int)
+
+    # expand to full [N, K]
+    p_full = np.zeros((len(y), K), dtype=p_trained.dtype)
+    p_full[:, trained_classes] = p_trained
+
+    # predictions + accuracy
+    yhat = np.argmax(p_full, axis=1)
     pcor = 100.0 * np.mean(yhat == y)
 
+    # LL = mean log p(true class)
+    p_true = p_full[np.arange(len(y)), y]
+    LL = safelog_np(p_true).mean()
+
+    # phat_mean for classes that actually appear in y
+    classes = np.unique(y)
     phat_mean = np.vstack([
-        pte_hat[y == c].mean(axis=0) if np.any(y == c) else np.zeros(pte_hat.shape[1])
+        p_full[y == c].mean(axis=0) if np.any(y == c) else np.zeros(K, dtype=p_full.dtype)
         for c in classes
     ])
 
-    return {"LL": float(LL), "pcor": float(pcor), "phat_mean": phat_mean, "classes": classes}
+    return {
+        "LL": float(LL),
+        "pcor": float(pcor),
+        "phat_mean": phat_mean,  # shape [num_present_classes, K]
+        "classes": classes,      # labels corresponding to rows of phat_mean
+    }
 
 
 # Main
@@ -503,9 +530,10 @@ def main(args):
             split = int(N * (1.0 - args.probe_valid_size))
             Xtr, Xte = hS[:split], hS[split:]
             ytr, yte = yS[:split], yS[split:]
+            K = base_env.K
 
             state_mdl = fit_state_decoder_sklearn(
-                Xtr, ytr,
+                Xtr, ytr, K, 
                 standardize=args.probe_standardize,
                 C=args.state_C,
                 class_weight=None,

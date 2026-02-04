@@ -25,6 +25,7 @@ class Irrelevant:
         self.R = torch.eye(self.state_size, self.state_size)
 
         self.I = torch.eye(self.state_size)
+        self.K = self.environment.K + self.state_size
 
     @property
     def gamma(self):

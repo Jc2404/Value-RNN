@@ -53,6 +53,7 @@ class TMaze:
 
         self.T = self._transition_model()
         self.O = self._observation_model()
+        self.K = 2 * (self.length + 3)
 
     def _observation_model(self):
         """
