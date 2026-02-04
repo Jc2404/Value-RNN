@@ -401,8 +401,9 @@ def main(args):
 
     # episode -> list of row dicts
     episode_rows = {}
-
-    for episode in range(0, train_args.episodes + 1, args.period):
+    if args.end_episode < 0 or args.end_episode > train_args.episodes:
+        args.end_episode = train_args.episodes
+    for episode in range(0, args.end_episode + 1, args.period):
         # Build agent fresh for safety
         agent = DRQN(
             cell=train_args.cell,
@@ -660,6 +661,7 @@ if __name__ == "__main__":
 
     # ---- schedule / sampling
     parser.add_argument("--period", type=int, default=100, help="Agent checkpoint interval.")
+    parser.add_argument("--end_episode", type=int, default=-1, help="Agent checkpoint end.")
     parser.add_argument("--epsilon", type=float, default=0.0)
     parser.add_argument("--approximate", action="store_true")
     parser.set_defaults(approximate=True)
