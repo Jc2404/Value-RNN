@@ -1,5 +1,7 @@
 import wandb
 import torch
+import pandas as pd
+import os
 
 from argparse import ArgumentParser
 from copy import deepcopy
@@ -17,6 +19,15 @@ def select_device():
     if torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
+
+def parse_variant(vname: str):
+    """
+    Examples:
+      "tmaze_length=45" -> ("tmaze_length", 45.0)
+      "starkweather_p_omission=0.1" -> ("starkweather_p_omission", 0.1)
+    """
+    k, v = vname.split("=")
+    return k, float(v)
 
 def build_environment(train_args, overrides=None):
     """
@@ -83,7 +94,8 @@ def pick_variants(train_args, args):
 
     if env_name == "starkweather":
         if args.test_p_omission:
-            grid = [0.0, 0.05, 0.08, 0.1, 0.12, 0.15, 0.2]
+            grid = [0.2, 0.2, 0.2, 0.1, 0.1]
+            #grid = [0.0, 0.05, 0.08, 0.1, 0.12, 0.15, 0.2]
             for p in grid:
                 variants.append((f"starkweather_p_omission={p}", {"p_omission": p}))
             return variants
@@ -160,6 +172,9 @@ def main(args):
     wandb.save("*.py")
     wandb.save("agents/*.py")
     wandb.save("environments/*.py")
+    os.makedirs("report", exist_ok=True)
+    excel_path = f"report/mi_protocolA_{args.train_id}.xlsx"
+    episode_rows = {}
 
     for episode in range(0, train_args.episodes + 1, args.mine_period):
         agent = DRQN(
@@ -206,6 +221,14 @@ def main(args):
             h_eval, b_eval = h_base, b_base
 
         mi_base = mine.estimate(h_eval, b_eval)
+        
+        episode_rows[episode] = []
+        episode_rows[episode].append({
+            "task_name": "base",
+            "task_value": None,
+            "mi": mi_base,
+            "metric": "MI",
+        })
 
         key_base = "mi/base"
         if args.belief_part is not None:
@@ -233,6 +256,14 @@ def main(args):
 
             mi_v = mine.estimate(h_v, b_v)
 
+            task_name, task_value = parse_variant(vname)
+            episode_rows[episode].append({
+                "task_name": task_name,
+                "task_value": task_value,
+                "mi": mi_v,
+                "metric": "MI",
+            })
+
             key_v = f"mi/frozen_on_base__eval_on/{vname}"
             if args.belief_part is not None:
                 key_v += f"-part{args.belief_part}"
@@ -242,6 +273,19 @@ def main(args):
             wandb.log({"train/episode": episode, key_v: mi_v})
             print(f"[episode {episode}] {vname} MI (frozen) = {mi_v}")
 
+    with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+        for ep, rows in episode_rows.items():
+            df = pd.DataFrame(rows)
+            df_sorted = df.sort_values(by=["task_value"], na_position="first")
+            wide = df_sorted.pivot_table(
+                index=["task_value"],
+                columns=["metric"],
+                values="mi",
+                aggfunc="mean"
+            ).reset_index()
+            sheet_name = f"ep_{ep}"
+            wide.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+    print(f"Saved Excel: {excel_path}")
     wandb.finish()
 
 
