@@ -670,7 +670,6 @@ if __name__ == "__main__":
     parser.add_argument("--end_episode", type=int, default=-1, help="Agent checkpoint end.")
     parser.add_argument("--epsilon", type=float, default=0.0)
     parser.add_argument("--approximate", action="store_true")
-    parser.set_defaults(approximate=True)
 
     # ---- variant test flag
     parser.add_argument("--test_length", action="store_true")
