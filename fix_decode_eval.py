@@ -313,6 +313,16 @@ def fit_state_decoder_sklearn(X_train_t, y_train_t, K, standardize=True, C=1.0, 
         scaler = None
         Xs = X_train
 
+    uniq = np.unique(y_train)
+    if len(uniq) == 1:
+        c0 = int(uniq[0])
+        return {
+            "scaler": scaler,
+            "clf": None,            # signal constant model
+            "K": int(K),
+            "constant_class": c0,   # always predict this
+        }
+
     clf = LogisticRegression(
         C=C,
         class_weight=class_weight,
@@ -346,36 +356,32 @@ def eval_state_decoder_sklearn(X, y, mdl):
 
     if scaler is not None:
         X = scaler.transform(X)
+    N = len(y)
+    
+    if mdl.get("clf", None) is None:
+        c0 = int(mdl["constant_class"])
+        p_full = np.zeros((N, K), dtype=np.float32)
+        p_full[:, c0] = 1.0
+    else:
+        clf = mdl["clf"]
+        p_trained = clf.predict_proba(X)                 # [N, K_trained]
+        trained_classes = clf.classes_.astype(int)       # labels
+        p_full = np.zeros((N, K), dtype=p_trained.dtype)
+        p_full[:, trained_classes] = p_trained
 
-    # probs for trained classes only: shape [N, K_trained]
-    p_trained = clf.predict_proba(X)
-    trained_classes = clf.classes_.astype(int)
-
-    # expand to full [N, K]
-    p_full = np.zeros((len(y), K), dtype=p_trained.dtype)
-    p_full[:, trained_classes] = p_trained
-
-    # predictions + accuracy
     yhat = np.argmax(p_full, axis=1)
     pcor = 100.0 * np.mean(yhat == y)
 
-    # LL = mean log p(true class)
-    p_true = p_full[np.arange(len(y)), y]
+    p_true = p_full[np.arange(N), y]
     LL = safelog_np(p_true).mean()
 
-    # phat_mean for classes that actually appear in y
     classes = np.unique(y)
     phat_mean = np.vstack([
         p_full[y == c].mean(axis=0) if np.any(y == c) else np.zeros(K, dtype=p_full.dtype)
         for c in classes
     ])
 
-    return {
-        "LL": float(LL),
-        "pcor": float(pcor),
-        "phat_mean": phat_mean,  # shape [num_present_classes, K]
-        "classes": classes,      # labels corresponding to rows of phat_mean
-    }
+    return {"LL": float(LL), "pcor": float(pcor), "phat_mean": phat_mean, "classes": classes}
 
 
 # Main
