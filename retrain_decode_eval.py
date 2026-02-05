@@ -551,7 +551,7 @@ def main(args):
     )
 
     # If nothing enabled, fail fast (common user mistake)
-    if not (args.run_mi or args.run_linreg or args.run_softmax or args.run_state):
+    if not (args.run_mi or args.run_regression or args.run_softmax_belief or args.run_state_decoder):
         raise ValueError("No decoders enabled. Use at least one of: --run_mi --run_linreg --run_softmax --run_state")
 
     if args.end_episode < 0 or args.end_episode > train_args.episodes:
@@ -577,7 +577,7 @@ def main(args):
                     "value": float(value) if value is not None else float("nan"),
                 })
 
-            if args.run_mi or args.run_linreg or args.run_softmax:
+            if args.run_mi or args.run_regression or args.run_softmax_belief:
                 # Train sample
                 h_tr, b_tr = generate_hiddens_and_beliefs(
                     agent, venv,
@@ -600,7 +600,7 @@ def main(args):
                 else:
                     h_ev, b_ev = h_tr, b_tr
 
-                if args.run_linreg or args.run_softmax:
+                if args.run_regression or args.run_softmax_belief:
                     Xtr, Xte, Btr, Bte = shuffle_split_tensors(h_tr, b_tr, args.valid_size, device)
 
                 # ---------------- MI ----------------
@@ -630,7 +630,7 @@ def main(args):
                     print(f"[episode {episode}] {vname} MI(refit) = {mi}", flush=True)
 
                 # ---------------- Linear regression ----------------
-                if args.run_linreg:
+                if args.run_regression:
                     # Evaluate per belief-part
                     for part_idx, (Ytr, Yte) in enumerate(zip(Btr, Bte)):
                         probe = fit_linear_probe_torch(
@@ -651,7 +651,7 @@ def main(args):
                         add_row(f"linreg_rsq-{part_idx}", rsq_te)
 
                 # ---------------- Softmax belief probe ----------------
-                if args.run_softmax:
+                if args.run_softmax_belief:
                     for part_idx, (Ytr, Yte) in enumerate(zip(Btr, Bte)):
                         sm_state = fit_softmax_probe_torch(Xtr, Ytr, args)
                         res_te = eval_softmax_probe_torch(Xte, Yte, sm_state, standardize=args.standardize)
@@ -669,7 +669,7 @@ def main(args):
                         add_row(f"softmax_ce-{part_idx}", res_te["ce"])
 
             # ---------------- State decoder
-            if args.run_state:
+            if args.run_state_decoder:
                 h_s, states = generate_hiddens_and_states(
                     agent, venv,
                     num_samples=args.num_samples,
