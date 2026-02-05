@@ -747,11 +747,24 @@ if __name__ == "__main__":
     parser.add_argument("--train_set", action="store_true")
     parser.add_argument("--valid_size", type=float, default=0.2)
 
+    # ---- Test flags (only one honored) ----
+    # TMaze
+    parser.add_argument("--test_length", action="store_true")
+    parser.add_argument("--test_stochasticity", action="store_true")
+    # Hike
+    parser.add_argument("--test_variations", action="store_true")
+    # Starkweather
+    parser.add_argument("--test_p_omission", action="store_true")
+    parser.add_argument("--test_bin_size", action="store_true")
+    parser.add_argument("--test_iti_hazard", action="store_true")
+    parser.add_argument("--test_iti_min", action="store_true")
+    parser.add_argument("--test_nITI_microstates", action="store_true")
+
     # enable decoders (MUST set at least one)
     parser.add_argument("--run_mi", action="store_true")
-    parser.add_argument("--run_linreg", action="store_true")
-    parser.add_argument("--run_softmax", action="store_true")
-    parser.add_argument("--run_state", action="store_true")
+    parser.add_argument("--run_regression", action="store_true")
+    parser.add_argument("--run_softmax_belief", action="store_true")
+    parser.add_argument("--run_state_decoder", action="store_true")
 
     # shared probe hyperparams (used by softmax + state; linreg uses closed form)
     parser.add_argument("--probe_epochs", type=int, default=300)
@@ -782,19 +795,6 @@ if __name__ == "__main__":
     parser.add_argument("--mine_lambda", type=float, default=0.0)
     parser.add_argument("--representation_size", type=int, default=16)
     parser.add_argument("--belief_part", type=int, default=None)
-
-    # ---- Test flags (only one honored) ----
-    # TMaze
-    parser.add_argument("--test_length", action="store_true")
-    parser.add_argument("--test_stochasticity", action="store_true")
-    # Hike
-    parser.add_argument("--test_variations", action="store_true")
-    # Starkweather
-    parser.add_argument("--test_p_omission", action="store_true")
-    parser.add_argument("--test_bin_size", action="store_true")
-    parser.add_argument("--test_iti_hazard", action="store_true")
-    parser.add_argument("--test_iti_min", action="store_true")
-    parser.add_argument("--test_nITI_microstates", action="store_true")
 
     args = parser.parse_args()
     print("\n".join(f"{k}={v}" for k, v in vars(args).items()), flush=True)
