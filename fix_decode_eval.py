@@ -76,10 +76,10 @@ def pick_variants(train_args, args):
 
     if env_name == "tmaze":
         if args.test_length:
-            grid = [45, 49, 50, 51, 55]
+            grid = [40, 45, 49, 50, 51, 55, 60]
             return [(f"tmaze_length={L}", {"length": L}) for L in grid]
         if args.test_stochasticity:
-            grid = [0.0, 0.05, 0.1, 0.15]
+            grid = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
             return [(f"tmaze_stochasticity={s}", {"stochasticity": s}) for s in grid]
 
     if env_name == "hike":
@@ -89,7 +89,7 @@ def pick_variants(train_args, args):
 
     if env_name == "starkweather":
         if args.test_p_omission:
-            grid = [0.0, 0.05, 0.1, 0.15, 0.2]
+            grid = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
             return [(f"starkweather_p_omission={p}", {"p_omission": p}) for p in grid]
         if args.test_bin_size:
             grid = [train_args.bin_size, max(1, train_args.bin_size // 2), train_args.bin_size * 2]
