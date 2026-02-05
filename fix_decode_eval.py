@@ -326,6 +326,7 @@ def fit_state_decoder_sklearn(X_train_t, y_train_t, K, standardize=True, C=1.0, 
     clf = LogisticRegression(
         C=C,
         class_weight=class_weight,
+        max_iter=5000
     )
     clf.fit(Xs, y_train)
 
