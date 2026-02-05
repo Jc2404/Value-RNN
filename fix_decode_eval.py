@@ -403,7 +403,7 @@ def main(args):
     wandb.save("environments/*.py")
 
     os.makedirs(args.report_dir, exist_ok=True)
-    excel_path = os.path.join(args.report_dir, f"protocolA_{args.train_id}.xlsx")
+    excel_path = os.path.join(args.report_dir, f"protocolA_{args.name}_{args.train_id}.xlsx")
 
     # episode -> list of row dicts
     episode_rows = {}
