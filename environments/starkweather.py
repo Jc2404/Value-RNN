@@ -1,14 +1,11 @@
 import numpy as np
 import torch
 import scipy.stats
-import random
 from math import ceil
-
-# from beliefs_starkweather.py
 
 NULL = 0
 STIM = 1
-REW = 2
+REW  = 2
 
 
 def transition_distribution(K, reward_times, reward_hazards,
@@ -23,27 +20,35 @@ def transition_distribution(K, reward_times, reward_hazards,
         ITI_start = iti_times[0]
         assert iti_times[-1] == K - 1, "last iti time should be last state"
 
-    T = np.zeros((K, K))
+    T = np.zeros((K, K), dtype=np.float32)
 
-    # no probability of transitioning out of isi during this time
-    for k in np.arange(min(reward_times)):
+    for k in np.arange(int(min(reward_times))):
         T[k, k + 1] = 1.0
 
-    # ISI states: may jump to ITI (reward delivery/omission) or progress in time
     for t, h in zip(reward_times, reward_hazards):
-        T[t, t + 1] = 1 - h
-        T[t, ITI_start] = h
-    # After last reward time, must go to ITI
-    T[reward_times.max(), ITI_start] = 1
+        t = int(t)
+        T[t, t + 1] = 1.0 - float(h)
+        T[t, ITI_start] = float(h)
 
-    # ITI microstates (except last ITI): march forward deterministically
+    # After last reward time, must go to ITI
+    T[int(reward_times.max()), ITI_start] = 1.0
+
+    # ITI microstates
     for t in iti_times[:-1]:
-        T[t, t + 1] = 1
+        t = int(t)
+        T[t, t + 1] = 1.0
 
     # transitions out of last ITI state:
-    T[-1, -1] = 1 - ITIhazard
-    T[-1, ITI_start] += ITIhazard * p_omission  # omission trial: go back into ITI
-    T[-1, 0] = ITIhazard * (1 - p_omission)    # new trial: go to pre-stim state
+    # - stay in ITI with prob 1-ITIhazard
+    # - with prob ITIhazard start a new trial (to state 0) unless omission
+    # - on omission, go back into ITI_start
+    T[-1, -1] = 1.0 - float(ITIhazard)
+    T[-1, ITI_start] += float(ITIhazard) * float(p_omission)       # omission trial: go back into ITI
+    T[-1, 0] = float(ITIhazard) * (1.0 - float(p_omission))        # new trial: go to pre-stim state
+
+    row_sums = T.sum(axis=1, keepdims=True)
+    if not np.allclose(row_sums, 1.0, atol=1e-6):
+        T = T / np.clip(row_sums, 1e-12, None)
 
     return T
 
@@ -52,7 +57,8 @@ def observation_distribution(K, reward_times, p_omission, ITIhazard, iti_times=N
     """
     O[i,j,m] = P(x'=m | s=i, s'=j), for m in {NULL, STIM, REW}
     """
-    O = np.zeros((K, K, 3))
+    O = np.zeros((K, K, 3), dtype=np.float32)
+
     if iti_times is None:
         ITI_start = -1
     else:
@@ -60,27 +66,29 @@ def observation_distribution(K, reward_times, p_omission, ITIhazard, iti_times=N
         assert iti_times[-1] == K - 1, "last iti time should be last state"
 
     # Progressed through time (non-ITI or non-reward transitions): observe NULL
+    # This covers all deterministic "k -> k+1" edges (including ITI forward microsteps).
     for k in np.arange(K - 1):
-        O[k, k + 1, :] = [1, 0, 0]
+        O[k, k + 1, :] = [1.0, 0.0, 0.0]
 
     # Obtained reward: reward_times -> ITI_start with REW observation
-    O[reward_times, ITI_start, :] = [0, 0, 1]
+    # (These are the "hazard-triggered" jumps to ITI.)
+    reward_times = np.asarray(reward_times, dtype=int)
+    O[reward_times, ITI_start, :] = [0.0, 0.0, 1.0]
 
     # Stimulus onset: last ITI state -> state 0 with STIM observation
-    O[-1, 0, :] = [0, 1, 0]
+    O[-1, 0, :] = [0.0, 1.0, 0.0]
 
     # ITI self-loop and omission logic
     if np.arange(K)[ITI_start] == K - 1:
         # Only one ITI microstate (ITI_start == last state)
-        O[-1, -1, NULL] = 1 - (ITIhazard * p_omission)  # stayed in ITI, saw NULL
-        O[-1, -1, STIM] = ITIhazard * p_omission        # omission trial: see STIM
-        O[-1, -1, REW] = 0                              # never see reward here
+        # On "omission", we see STIM but remain in ITI (because ITI_start == last)
+        O[-1, -1, NULL] = 1.0 - (float(ITIhazard) * float(p_omission))
+        O[-1, -1, STIM] = float(ITIhazard) * float(p_omission)
+        O[-1, -1, REW] = 0.0
     else:
-        # Multiple ITI microstates: last ITI always yields NULL
-        O[-1, -1, :] = [1, 0, 0]
+        O[-1, -1, :] = [1.0, 0.0, 0.0]
         if p_omission > 0:
-            # On omission, jump from last ITI to ITI_start with STIM
-            O[-1, ITI_start, :] = [0, 1, 0]
+            O[-1, ITI_start, :] = [0.0, 1.0, 0.0]
 
     return O
 
@@ -95,24 +103,22 @@ def pomdp(cue=0, p_omission=0.1, bin_size=0.2,
     """
     assert cue == 0
 
-    # Reward times in seconds and discrete bins
     rts = np.arange(1.2, 3.0, 0.2)
     reward_times = (rts / bin_size).astype(int)
 
-    # ISI distribution (Gaussian over times)
     ISIpdf = scipy.stats.norm.pdf(rts, rts.mean(), 0.5)
     ISIpdf = ISIpdf / ISIpdf.sum()
-
-    # Number of hidden states: last reward bin + ITI microstates
-    K = reward_times.max() + 1 + nITI_microstates
 
     # Hazard function for reward
     ISIcdf = np.cumsum(ISIpdf)
     ISIhazard = ISIpdf.copy()
-    ISIhazard[1:] = ISIpdf[1:] / (1 - ISIcdf[:-1])
+    ISIhazard[1:] = ISIpdf[1:] / (1.0 - ISIcdf[:-1])
     reward_hazards = ISIhazard
 
-    iti_times = np.arange(reward_times.max() + 1, K)
+    # Number of hidden states: last reward bin + ITI microstates
+    K = int(reward_times.max()) + 1 + int(nITI_microstates)
+
+    iti_times = np.arange(int(reward_times.max()) + 1, K, dtype=int)
 
     T = transition_distribution(
         K, reward_times, reward_hazards,
@@ -130,12 +136,18 @@ def pomdp(cue=0, p_omission=0.1, bin_size=0.2,
 def initial_belief(K, iti_min=0):
     """
     Start knowing we are in ITI at the beginning of a trial.
+
+    Convention (matches your existing intent):
+      - if iti_min == 0: start at last ITI microstate (K-1)
+      - if iti_min > 0: start at (K-1-iti_min)
+        (i.e., "at least iti_min steps away from stimulus")
     """
-    b = np.zeros(K)
-    b[-(iti_min + 1)] = 1.0
+    b = np.zeros(K, dtype=np.float32)
+    idx = int(K - 1 - iti_min)
+    idx = max(0, min(K - 1, idx))
+    b[idx] = 1.0
     return b
 
-# Environment
 
 class StarkweatherEnv:
     """
@@ -148,7 +160,7 @@ class StarkweatherEnv:
 
     gamma = 0.98
     observation_size = 3      # NULL / STIM / REW
-    action_size = 1           # dummy
+    action_size = 1
     belief_type = "exact"
 
     def __init__(
@@ -169,38 +181,49 @@ class StarkweatherEnv:
         self.nITI_microstates = nITI_microstates
         self.max_steps = max_steps
 
-        # Build POMDP and convert to torch
+
         T_np, O_np = pomdp(
             cue=0,
             p_omission=self.p_omission,
             bin_size=self.bin_size,
             ITIhazard=self.iti_hazard,
-            nITI_microstates=self.iti_min + 1,
+            nITI_microstates=self.nITI_microstates,
         )
         self.T = torch.from_numpy(T_np).float()           # [K, K]
         self.O = torch.from_numpy(O_np).float()           # [K, K, 3]
-        self.K = self.T.shape[0]
+        self.K = int(self.T.shape[0])
 
+        self.state = None
+        self.belief = None
+        self.steps = 0
 
     def horizon(self):
-        # Simple upper bound on episode length
         return self.max_steps
 
     def exploration(self):
-        # Only one action; always return 0
         return 0
 
     def reset(self):
         """
         Reset to the initial hidden state distribution and return first observation.
+
+        IMPORTANT FIX: do NOT sample from O[s,s,:] (often all zeros).
+        Instead sample an initial transition (s -> s') and then observation from O[s,s'].
         """
-        # Sample initial hidden state from the prior
         b0_np = initial_belief(self.K, iti_min=self.iti_min)
         self.belief = torch.from_numpy(b0_np).float()     # [K]
         self.state = torch.distributions.Categorical(self.belief).sample().item()
         self.steps = 0
 
-        obs = self._observation_from_state(self.state)
+        # Sample initial transition and observation consistently
+        T_s = self.T[self.state]                          # [K]
+        next_state = torch.distributions.Categorical(T_s).sample().item()
+        O_s = self.O[self.state, next_state]              # [3]
+        x = torch.distributions.Categorical(O_s).sample().item()
+
+        self.state = next_state
+        obs = torch.zeros(3)
+        obs[x] = 1.0
 
         if self.bayes:
             self._init_belief(obs)
@@ -217,21 +240,19 @@ class StarkweatherEnv:
         self.steps += 1
 
         # Sample next state according to T
-        T_s = self.T[self.state]                      # [K] = P(s' | s)
+        T_s = self.T[self.state]                          # [K] = P(s' | s)
         next_state = torch.distributions.Categorical(T_s).sample().item()
 
         # Sample observation given (s, s')
-        O_s = self.O[self.state, next_state]          # [3] over {NULL, STIM, REW}
+        O_s = self.O[self.state, next_state]
         x = torch.distributions.Categorical(O_s).sample().item()
 
         self.state = next_state
         obs = torch.zeros(3)
         obs[x] = 1.0
 
-        # reward: only when REW is observed
         reward = 1.0 if x == REW else 0.0
 
-        # termination: either after max_steps or after a reward
         done = (self.steps >= self.max_steps) or (x == REW)
 
         if self.bayes:
@@ -241,40 +262,28 @@ class StarkweatherEnv:
 
     # --- Belief handling ---
 
-    def _observation_from_state(self, state_idx: int):
-        """
-        Generate an observation given the current (initial) state.
-        For the very first time step we approximate by sampling from
-        staying in place (s -> s) with O[s,s,:].
-        """
-        O_ss = self.O[state_idx, state_idx]   # [3]
-        x = torch.distributions.Categorical(O_ss).sample().item()
-        obs = torch.zeros(3)
-        obs[x] = 1.0
-        return obs
-
     def _init_belief(self, observation: torch.FloatTensor):
         """
         Initialise belief b_0 based on the initial observation.
-        """
-        # start from prior
-        b = torch.from_numpy(initial_belief(self.K, iti_min=self.iti_min)).float()
 
-        # apply one-step update with 'pseudo' T*O for the first obs
-        x = observation.argmax().item()
-        T_eff = self.T * self.O[:, :, x]      # [K,K]
-        b = b @ T_eff
-        b = b / b.sum()
+        We start from the prior initial_belief, then apply one standard filter update:
+            b' ∝ b^T (T * O_x)
+        """
+        b = torch.from_numpy(initial_belief(self.K, iti_min=self.iti_min)).float()
+        x = int(observation.argmax().item())
+        T_eff = self.T * self.O[:, :, x]                  # [K, K]
+        b = b @ T_eff                                     # [K]
+        b = b / b.sum().clamp_min(1e-12)
         self.belief = b
 
     def _update_belief(self, action: int, observation: torch.FloatTensor):
         """
         Standard Bayesian filtering step b' ∝ b^T (T * O_x).
         """
-        x = observation.argmax().item()
-        T_eff = self.T * self.O[:, :, x]      # [K,K]
-        b = self.belief @ T_eff               # [K]
-        b = b / b.sum()
+        x = int(observation.argmax().item())
+        T_eff = self.T * self.O[:, :, x]                  # [K, K]
+        b = self.belief @ T_eff                           # [K]
+        b = b / b.sum().clamp_min(1e-12)
         self.belief = b
 
     def get_belief(self):

@@ -69,9 +69,6 @@ def build_environment(train_args, overrides=None):
 
 
 def pick_variants(train_args, args):
-    """
-    Only ONE test flag is honored at a time; others ignored.
-    """
     env_name = train_args.environment
 
     if env_name == "tmaze":
