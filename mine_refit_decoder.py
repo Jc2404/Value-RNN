@@ -96,8 +96,17 @@ def pick_variants(train_args, args):
         if args.test_nITI_microstates:
             for n in [1, 2, 4, 8]:
                 variants.append((f"starkweather_nITI_microstates={n}", {"nITI_microstates": n}))
+            return 
+        
+    if env_name == "tiger":
+        if args.test_listen_accuracy:
+            for p in [0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 1]:
+                variants.append((f"listen_accuracy={p}", {"listen_accuracy": p}))
             return variants
-
+        if args.test_reward_listen:
+            for r in [-5, -2, -1.5, -1, -0.5, -0.1]:
+                variants.append((f"reward_listen={r}", {"reward_listen": r}))
+            return variants
     return variants
 
 
@@ -179,7 +188,7 @@ def main(args):
                 valid_size=args.valid_size,
             )
 
-            # Evaluate on same variant (resample unless --train_set)
+            # Evaluate on same variant, resample unless --train_set
             if not args.train_set:
                 h_ev, b_ev = generate_hiddens_and_beliefs(
                     agent, venv,
@@ -241,6 +250,9 @@ if __name__ == "__main__":
     parser.add_argument("--test_iti_hazard", action="store_true")
     parser.add_argument("--test_iti_min", action="store_true")
     parser.add_argument("--test_nITI_microstates", action="store_true")
+    # Tiger
+    parser.add_argument("--test_listen_accuracy", action="store_true")
+    parser.add_argument("--test_reward_listen", action="store_true")
 
     args = parser.parse_args()
     print("\n".join(f"{k}={v}" for k, v in vars(args).items()))
