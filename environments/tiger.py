@@ -59,6 +59,7 @@ class Tiger:
         # internal state
         self.tiger_left = True
         self.terminal = False
+        self.K = 2
 
     # -------- Core API (as in TMaze) --------
 

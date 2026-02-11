@@ -10,6 +10,7 @@ from environments.tmaze import TMaze
 from environments.hike import MountainHike
 from environments.irrelevant import Irrelevant
 from environments.starkweather import StarkweatherEnv
+from environments.tiger import Tiger
 
 from random import random
 
@@ -440,6 +441,8 @@ class DRQN:
                     states.append(torch.as_tensor(environment.position, dtype=torch.long))
                 elif isinstance(environment, StarkweatherEnv):
                     states.append(torch.as_tensor(environment.state, dtype=torch.long))
+                elif isinstance(environment, Tiger):
+                    states.append(torch.as_tensor(environment.tiger_left, dtype=torch.long))
                 else:
                     raise NotImplementedError(f'Not implemented environment {environment}')
 
