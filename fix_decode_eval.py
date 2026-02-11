@@ -596,6 +596,10 @@ def main(args):
                 )
                 hv = hv.to(device)
                 bv = tuple(bb.to(device) for bb in bv)
+
+                print("h_base dim:", h_base.size(-1), "h_v dim:", hv.size(-1))
+                print("b_base dims:", [bb.size(-1) for bb in b_base])
+                print("b_v dims   :", [bb.size(-1) for bb in bv])
                 mi_v = mine.estimate(hv, bv)
                 row["MI"] = mi_v
                 wandb.log({"train/episode": episode,
@@ -708,7 +712,7 @@ if __name__ == "__main__":
     # ---- shared probe flag
     parser.add_argument("--probe_num_samples", type=int, default=10000)
     parser.add_argument("--probe_valid_size", type=float, default=0.2)
-    parser.add_argument("--probe_epochs", type=int, default=100)
+    parser.add_argument("--probe_epochs", type=int, default=200)
     parser.add_argument("--probe_lr", type=float, default=1e-3)
     parser.add_argument("--probe_batch_size", type=int, default=1024)
     parser.add_argument("--probe_standardize", action="store_true")
