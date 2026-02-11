@@ -13,6 +13,7 @@ from environments.tmaze import TMaze
 from environments.hike import MountainHike
 from environments.irrelevant import Irrelevant
 from environments.starkweather import StarkweatherEnv
+from environments.tiger import Tiger
 
 from agents.drqn import DRQN
 from mine.mine import MutualInformationNeuralEstimator
@@ -58,6 +59,15 @@ def build_environment(train_args, overrides=None):
             iti_hazard=overrides.get("iti_hazard", train_args.iti_hazard),
             iti_min=overrides.get("iti_min", train_args.iti_min),
             nITI_microstates=overrides.get("nITI_microstates", train_args.nITI_microstates),
+        )
+    elif env_name == "tiger":
+        env = Tiger(
+            bayes=True,
+            listen_accuracy=overrides.get("listen_accuracy", train_args.listen_accuracy),
+            reward_listen=overrides.get("reward_listen", train_args.reward_listen),
+            reward_correct=overrides.get("reward_correct", train_args.reward_correct),
+            reward_wrong=overrides.get("reward_wrong", train_args.reward_wrong),
+            horizon=overrides.get("horizon", train_args.horizon),
         )
     else:
         raise NotImplementedError(f"Unknown environment {env_name}")
@@ -106,6 +116,14 @@ def pick_variants(train_args, args):
             grid = [1, 2, 4, 8]
             return [(f"starkweather_nITI_microstates={n}", {"nITI_microstates": n}) for n in grid]
 
+    if env_name == "tiger":
+        if args.test_listen_accuracy:
+            grid = [0.55, 0.65, 0.75, 0.85, 0.95, 1.0]
+            return [(f"tiger_listen_accuracy={a}", {"listen_accuracy": a}) for a in grid]
+        if args.test_reward_listen:
+            grid = [-5, -2, 0, 2, 5]
+            return [(f"tiger_reward_listen={r}", {"reward_listen": r}) for r in grid]
+        
     return []
 
 
@@ -678,6 +696,8 @@ if __name__ == "__main__":
     parser.add_argument("--test_iti_hazard", action="store_true")
     parser.add_argument("--test_iti_min", action="store_true")
     parser.add_argument("--test_nITI_microstates", action="store_true")
+    parser.add_argument("--test_listen_accuracy", action="store_true")
+    parser.add_argument("--test_reward_listen", action="store_true")
 
     # ---- Experiments
     parser.add_argument("--run_mi", action="store_true")
