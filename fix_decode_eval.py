@@ -708,8 +708,8 @@ if __name__ == "__main__":
     # ---- shared probe flag
     parser.add_argument("--probe_num_samples", type=int, default=10000)
     parser.add_argument("--probe_valid_size", type=float, default=0.2)
-    parser.add_argument("--probe_epochs", type=int, default=300)
-    parser.add_argument("--probe_lr", type=float, default=1e-2)
+    parser.add_argument("--probe_epochs", type=int, default=100)
+    parser.add_argument("--probe_lr", type=float, default=1e-3)
     parser.add_argument("--probe_batch_size", type=int, default=1024)
     parser.add_argument("--probe_standardize", action="store_true")
     parser.set_defaults(probe_standardize=True)

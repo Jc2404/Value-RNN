@@ -791,8 +791,8 @@ if __name__ == "__main__":
     parser.add_argument("--run_state_decoder", action="store_true")
 
     # shared probe hyperparams (used by softmax + state; linreg uses closed form)
-    parser.add_argument("--probe_epochs", type=int, default=300)
-    parser.add_argument("--probe_lr", type=float, default=1e-2)
+    parser.add_argument("--probe_epochs", type=int, default=100)
+    parser.add_argument("--probe_lr", type=float, default=1e-3)
     parser.add_argument("--probe_batch_size", type=int, default=1024)
     parser.add_argument("--C", type=float, default=1.0)  # for state decoder weight decay analogue
 
