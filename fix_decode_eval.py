@@ -83,7 +83,7 @@ def pick_variants(train_args, args):
 
     if env_name == "tmaze":
         if args.test_length:
-            grid = [40, 45, 49, 50, 51, 55, 60]
+            grid = [35, 40, 45, 50, 55, 60]
             return [(f"tmaze_length={L}", {"length": L}) for L in grid]
         if args.test_stochasticity:
             grid = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
