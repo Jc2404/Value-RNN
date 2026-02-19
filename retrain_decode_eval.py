@@ -143,7 +143,7 @@ def pick_variants(train_args, args):
 
     if env_name == "tmaze":
         if args.test_length:
-            for L in [45, 49, 50, 51, 55]:
+            for L in [35, 40, 45, 50, 55, 60]:
                 variants.append((f"tmaze_length={L}", {"length": L}))
             return variants
         if args.test_stochasticity:
