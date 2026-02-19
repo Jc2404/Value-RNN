@@ -14,6 +14,8 @@ from environments.hike import MountainHike
 from environments.irrelevant import Irrelevant
 from environments.starkweather import StarkweatherEnv
 from environments.tiger import Tiger
+from environments.gridworld import GridWorld
+from environments.crybaby import CryingBaby
 
 from agents.drqn import DRQN
 from mine.mine import MutualInformationNeuralEstimator
@@ -69,6 +71,26 @@ def build_environment(train_args, overrides=None):
             reward_wrong=overrides.get("reward_wrong", train_args.reward_wrong),
             horizon=overrides.get("horizon", train_args.horizon),
         )
+    elif env_name == "gridworld":
+        env = GridWorld(
+            bayes=True,
+            size=overrides.get("size", train_args.grid_size),
+            tprob=overrides.get("tprob", train_args.tprob),
+            reward_scheme=overrides.get("reward_scheme", train_args.reward_scheme),
+            reward_margin=overrides.get("reward_margin", train_args.reward_margin),
+            step_cost=overrides.get("step_cost", train_args.step_cost),
+        )
+    elif env_name == "crybaby":
+        env = CryingBaby(
+            bayes=True,
+            p_cry_if_hungry=overrides.get("p_cry_if_hungry", train_args.p_cry_if_hungry),
+            p_cry_if_full=overrides.get("p_cry_if_full", train_args.p_cry_if_full),
+            p_hungry_if_full_wait=overrides.get("p_hungry_if_full_wait", train_args.p_hungry_if_full_wait),
+            p_stay_hungry_wait=overrides.get("p_stay_hungry_wait", train_args.p_stay_hungry_wait),
+            p_full_if_feed=overrides.get("p_full_if_feed", train_args.p_full_if_feed),
+            reward_cry=overrides.get("reward_cry", train_args.reward_cry),
+            cost_feed=overrides.get("cost_feed", train_args.cost_feed),
+        )
     else:
         raise NotImplementedError(f"Unknown environment {env_name}")
 
@@ -89,12 +111,12 @@ def pick_variants(train_args, args):
             grid = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
             return [(f"tmaze_stochasticity={s}", {"stochasticity": s}) for s in grid]
 
-    if env_name == "hike":
+    elif env_name == "hike":
         if args.test_variations:
             grid = [1, 2, 4, 8]
             return [(f"hike_variations={v}", {"variations": v}) for v in grid]
 
-    if env_name == "starkweather":
+    elif env_name == "starkweather":
         if args.test_p_omission:
             grid = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
             return [(f"starkweather_p_omission={p}", {"p_omission": p}) for p in grid]
@@ -116,13 +138,26 @@ def pick_variants(train_args, args):
             grid = [1, 2, 4, 8]
             return [(f"starkweather_nITI_microstates={n}", {"nITI_microstates": n}) for n in grid]
 
-    if env_name == "tiger":
+    elif env_name == "tiger":
         if args.test_listen_accuracy:
             grid = [0.55, 0.65, 0.75, 0.85, 0.95, 1.0]
             return [(f"tiger_listen_accuracy={a}", {"listen_accuracy": a}) for a in grid]
         if args.test_reward_listen:
             grid = [-5, -2, 0, 2, 5]
             return [(f"tiger_reward_listen={r}", {"reward_listen": r}) for r in grid]
+        
+    elif env_name == "gridworld":
+        if args.test_tprob:
+            grid = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+            return [(f"gridworld_tprob={p}", {"tprob": p}) for p in grid]
+    
+    elif env_name == "crybaby":
+        if args.test_p_cry_if_hungry:
+            grid = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+            return [(f"crybaby_p_cry_if_hungry={p}", {"p_cry_if_hungry": p}) for p in grid]
+        if args.test_p_cry_if_full:
+            grid = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+            return [(f"crybaby_p_cry_if_full={p}", {"p_cry_if_full": p}) for p in grid]
         
     return []
 
@@ -702,6 +737,9 @@ if __name__ == "__main__":
     parser.add_argument("--test_nITI_microstates", action="store_true")
     parser.add_argument("--test_listen_accuracy", action="store_true")
     parser.add_argument("--test_reward_listen", action="store_true")
+    parser.add_argument("--test_tprob", action="store_true")
+    parser.add_argument("--test_p_cry_if_hungry", action="store_true")
+    parser.add_argument("--test_p_cry_if_full", action="store_true")
 
     # ---- Experiments
     parser.add_argument("--run_mi", action="store_true")

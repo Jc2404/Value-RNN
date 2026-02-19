@@ -28,11 +28,6 @@ from environments.starkweather import StarkweatherEnv
 from environments.tiger import Tiger
 from agents.drqn import DRQN
 
-
-# ----------------------------
-# Helpers
-# ----------------------------
-
 def build_environment(config) -> object:
     """Mirror train.py environment construction, but for evaluation."""
     if config.environment == "tmaze":
@@ -119,10 +114,6 @@ def evaluate_checkpoint(
     mean_return, mean_disc_return = agent.eval(env, num_rollouts)
     return float(mean_return), float(mean_disc_return)
 
-
-# ----------------------------
-# Main
-# ----------------------------
 
 def main(args):
     # Build env once (same env object used across episodes)

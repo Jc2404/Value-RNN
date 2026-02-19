@@ -7,6 +7,8 @@ from environments.hike import MountainHike
 from environments.irrelevant import Irrelevant
 from environments.starkweather import StarkweatherEnv
 from environments.tiger import Tiger
+from environments.gridworld import GridWorld
+from environments.crybaby import CryingBaby
 from agents.drqn import DRQN
 
 
@@ -52,6 +54,26 @@ def main(args):
             reward_correct=config.reward_correct,
             reward_wrong=config.reward_wrong,
             horizon=config.horizon,
+            bayes=False,
+        )
+    elif config.environment == 'gridworld':
+        environment = GridWorld(
+            size=config.size,
+            tprob=config.tprob,
+            reward_scheme=config.reward_scheme,
+            reward_margin=config.reward_margin,
+            step_cost=config.step_cost,
+            bayes=False,
+        )
+    elif config.environment == 'crybaby':
+        environment = CryingBaby(
+            p_hungry_if_full_wait=config.p_hungry_if_full_wait,
+            p_stay_hungry_wait=config.p_stay_hungry_wait,
+            p_full_if_feed=config.p_full_if_feed,
+            p_cry_if_hungry=config.p_cry_if_hungry,
+            p_cry_if_full=config.p_cry_if_full,
+            reward_cry=config.reward_cry,
+            cost_feed=config.cost_feed,
             bayes=False,
         )
     else:
@@ -161,6 +183,24 @@ if __name__ == '__main__':
     tiger.add_argument('--reward-correct', type=float, default=10.0)
     tiger.add_argument('--reward-wrong', type=float, default=-100.0)
     tiger.add_argument('--horizon', type=int, default=20)
+
+    # Environment: GridWorld
+    gridworld = environment_subparser.add_parser('gridworld')
+    gridworld.add_argument('--size', type=int, default=10)
+    gridworld.add_argument('--tprob', type=float, default=0.7)
+    gridworld.add_argument('--reward-scheme', type=str, default='julia')
+    gridworld.add_argument('--reward-margin', type=int, default=2)
+    gridworld.add_argument('--step-cost', type=float, default=0.0)
+
+    # Environment: Crying Baby
+    crybaby = environment_subparser.add_parser('crybaby')
+    crybaby.add_argument('--p_hungry_if_full_wait', type=float, default=0.10)
+    crybaby.add_argument('--p_stay_hungry_wait', type=float, default=0.90)
+    crybaby.add_argument('--p_full_if_feed', type=float, default=0.95)
+    crybaby.add_argument('--p_cry_if_hungry', type=float, default=0.90)
+    crybaby.add_argument('--p_cry_if_full', type=float, default=0.10)
+    crybaby.add_argument('--reward_cry', type=float, default=-1.0)
+    crybaby.add_argument('--cost_feed', type=float, default=-0.2)
 
     # Parse command line arguments
     args = parser.parse_args()

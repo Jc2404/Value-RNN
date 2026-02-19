@@ -36,6 +36,8 @@ from environments.hike import MountainHike
 from environments.irrelevant import Irrelevant
 from environments.starkweather import StarkweatherEnv
 from environments.tiger import Tiger
+from environments.gridworld import GridWorld
+from environments.crybaby import CryingBaby
 
 from agents.drqn import DRQN
 from mine.mine import MutualInformationNeuralEstimator
@@ -99,6 +101,26 @@ def build_environment(train_args, overrides=None):
             reward_correct=overrides.get("reward_correct", train_args.reward_correct),
             reward_wrong=overrides.get("reward_wrong", train_args.reward_wrong),
             horizon=overrides.get("horizon", train_args.horizon),
+        )
+    elif env_name == "gridworld":
+        env = GridWorld(
+            bayes=True,
+            size=overrides.get("size", train_args.grid_size),
+            tprob=overrides.get("tprob", train_args.tprob),
+            reward_scheme=overrides.get("reward_scheme", train_args.reward_scheme),
+            reward_margin=overrides.get("reward_margin", train_args.reward_margin),
+            step_cost=overrides.get("step_cost", train_args.step_cost),
+        )
+    elif env_name == "crybaby":
+        env = CryingBaby(
+            bayes=True,
+            p_cry_if_hungry=overrides.get("p_cry_if_hungry", train_args.p_cry_if_hungry),
+            p_cry_if_full=overrides.get("p_cry_if_full", train_args.p_cry_if_full),
+            p_hungry_if_full_wait=overrides.get("p_hungry_if_full_wait", train_args.p_hungry_if_full_wait),
+            p_stay_hungry_wait=overrides.get("p_stay_hungry_wait", train_args.p_stay_hungry_wait),
+            p_full_if_feed=overrides.get("p_full_if_feed", train_args.p_full_if_feed),
+            reward_cry=overrides.get("reward_cry", train_args.reward_cry),
+            cost_feed=overrides.get("cost_feed", train_args.cost_feed),
         )
     else:
         raise NotImplementedError(f"Unknown environment {env_name}")
@@ -172,10 +194,26 @@ def pick_variants(train_args, args):
             for r in [-5, -2, -1.5, -1, -0.5, -0.1]:
                 variants.append((f"reward_listen={r}", {"reward_listen": r}))
             return variants
+        
+    if env_name == "gridworld":
+        if args.test_grid_size:
+            for s in [6, 8, 10, 12, 14]:
+                variants.append((f"grid_size={s}", {"size": s}))
+            return variants
+        if args.test_tprob:
+            for p in [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+                variants.append((f"tprob={p}", {"tprob": p}))
+            return variants
+        
+    if env_name == "crybaby":
+        if args.test_p_cry_if_hungry:
+            grid = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+            return [(f"crybaby_p_cry_if_hungry={p}", {"p_cry_if_hungry": p}) for p in grid]
+        if args.test_p_cry_if_full:
+            grid = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+            return [(f"crybaby_p_cry_if_full={p}", {"p_cry_if_full": p}) for p in grid]    
+
     return variants
-
-    return [("base", {})]
-
 
 # -----------------------------
 # Common train/test split
@@ -783,6 +821,12 @@ if __name__ == "__main__":
     # Tiger
     parser.add_argument("--test_listen_accuracy", action="store_true")
     parser.add_argument("--test_reward_listen", action="store_true")
+    # GridWorld
+    parser.add_argument("--test_grid_size", action="store_true")
+    parser.add_argument("--test_tprob", action="store_true")
+    # CryBaby
+    parser.add_argument("--test_p_cry_if_hungry", action="store_true")
+    parser.add_argument("--test_p_cry_if_full", action="store_true")
 
     # enable decoders (MUST set at least one)
     parser.add_argument("--run_mi", action="store_true")
