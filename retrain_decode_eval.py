@@ -105,7 +105,7 @@ def build_environment(train_args, overrides=None):
     elif env_name == "gridworld":
         env = GridWorld(
             bayes=True,
-            size=overrides.get("size", train_args.grid_size),
+            size=overrides.get("size", train_args.size),
             tprob=overrides.get("tprob", train_args.tprob),
             reward_scheme=overrides.get("reward_scheme", train_args.reward_scheme),
             reward_margin=overrides.get("reward_margin", train_args.reward_margin),
