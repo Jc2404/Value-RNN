@@ -11,6 +11,8 @@ from environments.hike import MountainHike
 from environments.irrelevant import Irrelevant
 from environments.starkweather import StarkweatherEnv
 from environments.tiger import Tiger
+from environments.gridworld import GridWorld
+from environments.crybaby import CryingBaby
 
 from random import random
 
@@ -443,6 +445,10 @@ class DRQN:
                     states.append(torch.as_tensor(environment.state, dtype=torch.long))
                 elif isinstance(environment, Tiger):
                     states.append(torch.as_tensor(environment.tiger_left, dtype=torch.long))
+                elif isinstance(environment, CryingBaby):
+                    states.append(torch.as_tensor(environment.state, dtype=torch.long))
+                elif isinstance(environment, GridWorld):
+                    states.append(torch.as_tensor(environment._idx[environment.state], dtype=torch.long))
                 else:
                     raise NotImplementedError(f'Not implemented environment {environment}')
 
