@@ -13,3 +13,5 @@ regression_weights
 report/
 mine/__pycache__/
 help_merge.py
+legacy/
+Codex.dmg
