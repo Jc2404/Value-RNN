@@ -301,7 +301,7 @@ def fit_belief_kl_probe(X_train, Y_train, args):
         Xn = X_train
 
     probe = (MLPProbe(H, K, add_bias=True).to(device)
-             if args.sm_use_mlp else SoftmaxProbe(H, K, add_bias=True).to(device))
+             if args.use_mlp_probe else SoftmaxProbe(H, K, add_bias=True).to(device))
 
     opt = torch.optim.Adam(probe.parameters(), lr=args.probe_lr)
     criterion = nn.KLDivLoss(reduction="batchmean")
@@ -758,7 +758,7 @@ if __name__ == "__main__":
                         help="Disable float64 in least squares (float32 only).")
 
     # ---- belief KL probe
-    parser.add_argument("--sm_use_mlp", action="store_true",
+    parser.add_argument("--use_mlp_probe", action="store_true",
                         help="If set, use MLP probe instead of linear for belief KL.")
 
     # ---- state decoder

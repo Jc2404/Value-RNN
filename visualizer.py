@@ -7,7 +7,10 @@
 #
 # Output:
 #   report/behavior_<name>_<train_id>/ep_<E>_<env>.png
-
+import glob
+import wandb
+import torch.nn.functional as F
+from fix_decode_eval import SoftmaxProbe, MLPProbe
 import os
 import random
 from argparse import ArgumentParser
@@ -83,12 +86,27 @@ def build_env_from_args(args) -> Tuple[object, List[str], List[str]]:
 def get_true_state01(env, env_name: str) -> int:
     # Tiger: env.tiger_left is bool (True=left)
     if env_name == "tiger":
-        return 1 if bool(env.tiger_left) else 0
+        return 0 if bool(env.tiger_left) else 1
     # CryingBaby: env.state is 0(HUNGRY) / 1(FULL)
     if env_name == "crybaby":
         return int(env.state)
     raise ValueError(env_name)
 
+def _hidden_to_vec(hidden) -> torch.Tensor:
+    """
+    Match DRQN.play() behavior for MI/decoder training:
+      - take hidden_states[0] (h for GRU, h for LSTM)
+      - flatten all layers (and batch=1)
+    """
+    if isinstance(hidden, (tuple, list)):
+        # In this repo:
+        #   GRU returns (h,)
+        #   LSTM returns (h, c)
+        h = hidden[0]
+    else:
+        h = hidden
+
+    return h.detach().flatten()
 
 @torch.no_grad()
 def rollout_full(
@@ -98,63 +116,45 @@ def rollout_full(
     device: torch.device,
     epsilon: float = 0.0,
 ) -> Dict[str, np.ndarray]:
-    """
-    Rollout one episode, recording per time-step (before acting):
-      belief_p[t] = belief[0]
-      state01[t]  = true hidden state in {0,1}
-      obs_idx[t]  = current observation index (before action)
-      act_idx[t]  = chosen action index
-    """
     agent.Q.eval()
 
-    # reset env
-    obs = env.reset()  # one-hot torch tensor (on CPU)
+    obs = env.reset()
     done = False
 
-    # initial "last observed" vector: [a_onehot, o_onehot, r]
-    # action is "none" => zero vector, reward=0
+    # IMPORTANT: must match training input = [a_{t-1}, o_t] (NO reward)
     a0 = torch.zeros(env.action_size, dtype=torch.float32, device=device)
     o0 = obs.to(device).float()
-    r0 = torch.zeros(1, dtype=torch.float32, device=device)
-    last = torch.cat([a0, o0], dim=0)  # [A+O+1]
+    last = torch.cat([a0, o0], dim=0)  # [A+O]
     hidden = None
 
-    belief_p: List[float] = []
-    state01: List[int] = []
-    obs_idx: List[int] = []
-    act_idx: List[int] = []
+    belief_p, state01, obs_idx, act_idx = [], [], [], []
+    hs = []
 
     for _t in range(env.horizon()):
-        # record BEFORE taking action
-        if not hasattr(env, "get_belief"):
-            raise RuntimeError("Env has no get_belief(); need bayes=True env.")
-        b = env.get_belief()[0]  # shape [2]
+        b = env.get_belief()[0]
         belief_p.append(float(b[0].item()))
         state01.append(get_true_state01(env, env_name))
         obs_idx.append(int(o0.argmax().item()))
 
-        # epsilon-greedy action
+        tau_t = last.view(1, 1, -1)
+        qvals, hidden_next = agent.Q(tau_t, hidden)
+
+        # record representation AFTER consuming current input (aligned with qvals)
+        hs.append(_hidden_to_vec(hidden_next).detach().cpu().numpy().astype(np.float32))
+
         if random.random() < float(epsilon):
-            a = env.exploration()
-            a = int(a)
-            # still need to advance hidden state consistently
-            tau_t = last.view(1, 1, -1)
-            _, hidden = agent.Q(tau_t, hidden)
+            a = int(env.exploration())
         else:
-            tau_t = last.view(1, 1, -1)  # [1,1,D]
-            qvals, hidden = agent.Q(tau_t, hidden)  # qvals: [1,1,A]
             a = int(torch.argmax(qvals[0, 0]).item())
 
         act_idx.append(a)
+        hidden = hidden_next
 
-        # step env
-        obs2, rew, done = env.step(a)
+        obs2, _rew, done = env.step(a)
         o0 = obs2.to(device).float()
 
-        # update last observed vector for next step
         a1 = onehot(env.action_size, a, device=device)
-        r1 = torch.tensor([float(rew)], dtype=torch.float32, device=device)
-        last = torch.cat([a1, o0], dim=0)
+        last = torch.cat([a1, o0], dim=0)  # [A+O]
 
         if done:
             break
@@ -164,8 +164,119 @@ def rollout_full(
         "state01": np.asarray(state01, dtype=np.int64),
         "obs_idx": np.asarray(obs_idx, dtype=np.int64),
         "act_idx": np.asarray(act_idx, dtype=np.int64),
+        "h": np.asarray(hs, dtype=np.float32),   # <-- CRITICAL
     }
 
+def _find_softmax_path(ep_dir: str, decoder_name: str, part_idx: int) -> Optional[str]:
+    # Primary (matches train_decoder.py): "{name}_softmax_b{idx}.pth" :contentReference[oaicite:3]{index=3}
+    p1 = os.path.join(ep_dir, f"{decoder_name}_softmax_b{part_idx}.pth")
+    if os.path.isfile(p1):
+        return p1
+    # Fallbacks for older naming variants
+    cands = glob.glob(os.path.join(ep_dir, f"*softmax_b{part_idx}.pth"))
+    return cands[0] if len(cands) > 0 else None
+
+
+def load_linreg_probe(weights_dir: str, train_id: str, episode: int, part_idx: int = 0) -> Optional[dict]:
+    """
+    Loads:
+      weights/decoders/<train_id>/ep_<E>/linreg_b<i>.pth  :contentReference[oaicite:4]{index=4}
+    Returns the internal 'probe' dict saved by fit_linreg_torch.
+    """
+    ep_dir = os.path.join(weights_dir, "decoders", train_id, f"ep_{episode}")
+    path = os.path.join(ep_dir, f"linreg_b{part_idx}.pth")
+    if not os.path.isfile(path):
+        return None
+    payload = torch.load(path, map_location="cpu")
+    if payload.get("type") != "linreg":
+        raise ValueError(f"Unexpected linreg payload type in {path}: {payload.get('type')}")
+    return payload["probe"]
+
+
+def load_softmax_probe(weights_dir: str, train_id: str, episode: int, decoder_name: str, part_idx: int = 0,
+                       device: torch.device = torch.device("cpu")) -> Optional[dict]:
+    """
+    Loads:
+      weights/decoders/<train_id>/ep_<E>/{decoder_name}_softmax_b<i>.pth  :contentReference[oaicite:5]{index=5}
+
+    Returns state dict:
+      {"probe": nn.Module, "mean": Tensor|None, "std": Tensor|None, "standardize": bool}
+    """
+    ep_dir = os.path.join(weights_dir, "decoders", train_id, f"ep_{episode}")
+    path = _find_softmax_path(ep_dir, decoder_name, part_idx)
+    if path is None:
+        return None
+
+    payload = torch.load(path, map_location="cpu")
+    if payload.get("type") != "softmax_kl":
+        raise ValueError(f"Unexpected softmax payload type in {path}: {payload.get('type')}")
+
+    in_dim = int(payload["in_dim"])
+    out_dim = int(payload["out_dim"])
+    use_mlp = bool(payload["use_mlp"])
+
+    probe = (MLPProbe(in_dim, out_dim, add_bias=True) if use_mlp else SoftmaxProbe(in_dim, out_dim, add_bias=True))
+    probe.load_state_dict(payload["probe_state_dict"])
+    probe.to(device)
+    probe.eval()
+
+    mean = payload["mean"]
+    std = payload["std"]
+    if mean is not None:
+        mean = mean.to(device)
+    if std is not None:
+        std = std.to(device)
+
+    return {
+        "probe": probe,
+        "mean": mean,
+        "std": std,
+        "standardize": bool(payload["standardize"]),
+        "path": path,
+    }
+
+
+@torch.no_grad()
+def predict_linreg_belief(X: torch.Tensor, probe: dict) -> torch.Tensor:
+    """
+    X: [N,H]
+    probe: dict from fit_linreg_torch (W, mean, std, add_bias, standardize, use_float64) 
+    returns: [N,K] in the simplex (clip+renorm for plotting)
+    """
+    device = X.device
+    Xn = X
+    if probe.get("standardize", False):
+        Xn = (Xn - probe["mean"].to(device)) / probe["std"].to(device)
+
+    if probe.get("add_bias", True):
+        ones = torch.ones(Xn.size(0), 1, device=device, dtype=Xn.dtype)
+        Xn = torch.cat([Xn, ones], dim=1)
+
+    W = probe["W"].to(device)
+    if probe.get("use_float64", False):
+        Yhat = Xn.double() @ W.double()
+        Yhat = Yhat.float()
+    else:
+        Yhat = Xn @ W
+
+    # make it usable as "belief" for visualization (non-negative + renorm)
+    Yhat = torch.clamp(Yhat, min=0.0)
+    Yhat = Yhat / (Yhat.sum(dim=1, keepdim=True) + 1e-8)
+    return Yhat
+
+
+@torch.no_grad()
+def predict_softmax_belief(X: torch.Tensor, state: dict) -> torch.Tensor:
+    """
+    X: [N,H]
+    state: {"probe","mean","std","standardize"}
+    returns: [N,K] probs
+    """
+    Xn = X
+    if state.get("standardize", False):
+        Xn = (Xn - state["mean"]) / state["std"]
+    logp = state["probe"](Xn)  # log_softmax output 
+    return torch.exp(logp)
 
 def plot_rollout(
     data: Dict[str, np.ndarray],
@@ -201,6 +312,12 @@ def plot_rollout(
     ax1.set_ylabel("belief p")
     ax1.set_title(title)
     ax1.grid(True, alpha=0.3)
+
+    if "belief_p_lin" in data:
+        ax1.plot(x, data["belief_p_lin"], linewidth=2.0, alpha=0.85, label="linreg-decoded p")
+    if "belief_p_smx" in data:
+        ax1.plot(x, data["belief_p_smx"], linewidth=2.0, alpha=0.85, label="softmax-decoded p")
+
     ax1.legend(loc="upper right")
 
     ax_state = fig.add_subplot(gs[1, 0], sharex=ax1)
@@ -217,34 +334,34 @@ def plot_rollout(
 
     ax2 = fig.add_subplot(gs[2, 0], sharex=ax1)
 
-    # Observation
     ax2.step(
         x,
         data["obs_idx"],
         where="post",
         linewidth=2.0,
         alpha=0.7,
-        color = 'red',
+        color="red",
         label="observation",
     )
-    ax2.set_yticks(range(len(obs_labels)))
-    ax2.set_yticklabels(obs_labels)
-    ax2.set_ylabel("observation")
-    ax2.grid(True, alpha=0.3)
 
-    # Action (right axis)
-    ax2b = ax2.twinx()
-    ax2b.step(
+    # true state projected onto same axis
+    ax2.step(
         x,
         data["state01"],
         where="post",
         linewidth=2.0,
         alpha=0.7,
+        color="blue",
+        linestyle="--",
         label="true state",
     )
-    ax2b.set_yticks([0, 1])
-    ax2b.set_yticklabels(["0", "1"])
-    ax2b.set_ylabel("true state")
+
+    ax2.set_yticks(range(len(obs_labels)))
+    ax2.set_yticklabels(obs_labels)
+
+    ax2.set_ylabel("observation / true state")
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
 
     ax2.set_xlabel("time step (t)")
 
@@ -292,6 +409,21 @@ def main(args):
         agent.load(args.train_id, episode=ep)
         print(f"[loaded] train_id={args.train_id} episode={ep}", flush=True)
 
+        lin_probe = None
+        smx_state = None
+
+        if args.overlay_decoders:
+            if args.decoder_name is None:
+                raise ValueError("--decoder_name is required when --overlay_decoders is set.")
+
+            lin_probe = load_linreg_probe(args.decoder_weights_dir, args.train_id, ep, part_idx=0)
+            smx_state = load_softmax_probe(args.decoder_weights_dir, args.train_id, ep,
+                                        decoder_name=args.decoder_name, part_idx=0, device=device)
+
+            if lin_probe is None and smx_state is None:
+                print(f"[warn] no decoders found for ep={ep} under "
+                    f"{os.path.join(args.decoder_weights_dir,'decoders',args.train_id,f'ep_{ep}')}", flush=True)
+
         data = rollout_full(
             agent=agent,
             env=env,
@@ -299,6 +431,17 @@ def main(args):
             device=device,
             epsilon=args.epsilon,
         )
+
+        if args.overlay_decoders and "h" in data:
+            Htraj = torch.from_numpy(data["h"]).to(device).float()  # [T,H]
+
+            if lin_probe is not None:
+                p_lin = predict_linreg_belief(Htraj, lin_probe)[:, 0].detach().cpu().numpy()
+                data["belief_p_lin"] = p_lin.astype(np.float32)
+
+            if smx_state is not None:
+                p_smx = predict_softmax_belief(Htraj, smx_state)[:, 0].detach().cpu().numpy()
+                data["belief_p_smx"] = p_smx.astype(np.float32)
 
         title = f"{args.environment} | train_id={args.train_id} | episode={ep} | eps-greedy={args.epsilon}"
         save_path = os.path.join(out_dir, f"ep_{ep}_{args.environment}.png")
@@ -317,6 +460,13 @@ if __name__ == "__main__":
     parser.add_argument("--end_episode", type=int, default=-1)
     parser.add_argument("--epsilon", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=0)
+
+    parser.add_argument("--overlay_decoders", action="store_true",
+                        help="Load frozen belief decoders and overlay decoded belief onto true belief.")
+    parser.add_argument("--decoder_name", type=str, default=None,
+                        help="Decoder run name used during training (prefix for saved softmax files).")
+    parser.add_argument("--decoder_weights_dir", type=str, default="weights",
+                        help="Root weights directory (expects <dir>/decoders/<train_id>/ep_<E>/...).")
 
     sub = parser.add_subparsers(dest="environment", required=True)
 

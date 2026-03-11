@@ -9,9 +9,9 @@ parser = ArgumentParser("File name")
 parser.add_argument("name", type=str, nargs="?", default=None)
 parser.add_argument("task", type=str, nargs="?", default=None)
 parser.add_argument("base_x", type=float, nargs="?", default=-0.02)
-
+args = parser.parse_args()
 excel_path = r"D:\\Personal folder\\University\\Projects\\4th year\\belief-rnn\\report\\"
-excel_path = os.path.join(excel_path, f"{parser.parse_args().name}.xlsx")
+excel_path = os.path.join(excel_path, f"{args.name}.xlsx")
 # Load workbook
 xls = pd.ExcelFile(excel_path)
 
@@ -48,6 +48,8 @@ for metric in metric_cols:
         # Plot line for variants
         # ---------------------------
         if not var_df.empty:
+            print("Plotting variants for sheet:", sheet)
+            print(var_df["task_value"], var_df[metric])
             plt.plot(
                 var_df["task_value"],
                 var_df[metric],
@@ -61,9 +63,11 @@ for metric in metric_cols:
         if not base_df.empty:
             base_y = base_df[metric].values[0]
 
+            print("Protocol A")
+
             # place base at NaN-safe x position slightly left of first point
             if not var_df.empty:
-                base_x = parser.parse_args().base_x
+                base_x = args.base_x
             else:
                 base_x = 0
             plt.scatter(
@@ -77,7 +81,7 @@ for metric in metric_cols:
     plt.xlabel("Task value")
     plt.ylabel(metric)
     plt.xticks(var_df["task_value"])
-    plt.title(f"{metric} for base case at {parser.parse_args().task}={parser.parse_args().base_x}")
+    plt.title(f"{metric} for base case at {args.task}={parser.parse_args().base_x}")
     plt.legend()
     plt.grid(False)
     if metric == "linreg_rsq-0":
