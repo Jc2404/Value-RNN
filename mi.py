@@ -61,9 +61,9 @@ def main(args):
             bayes=True,
             listen_accuracy = train_args.listen_accuracy,
             reward_listen = train_args.reward_listen,
-            reward_correct="reward_correct", train_args.reward_correct,
+            reward_correct= train_args.reward_correct,
             reward_wrong=train_args.reward_wrong,
-            horizon="horizon", train_args.horizon,
+            horizon= train_args.horizon,
         )
     elif config.environment == "gridworld":
         environment = GridWorld(
