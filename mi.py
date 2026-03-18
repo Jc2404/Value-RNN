@@ -57,33 +57,33 @@ def main(args):
             nITI_microstates = train_args.nITI_microstates,
         )
     elif config.environment == "tiger":
-        env = Tiger(
+        environment = Tiger(
             bayes=True,
-            listen_accuracy=overrides.get("listen_accuracy", train_args.listen_accuracy),
-            reward_listen=overrides.get("reward_listen", train_args.reward_listen),
-            reward_correct=overrides.get("reward_correct", train_args.reward_correct),
-            reward_wrong=overrides.get("reward_wrong", train_args.reward_wrong),
-            horizon=overrides.get("horizon", train_args.horizon),
+            listen_accuracy = train_args.listen_accuracy,
+            reward_listen = train_args.reward_listen,
+            reward_correct="reward_correct", train_args.reward_correct,
+            reward_wrong=train_args.reward_wrong,
+            horizon="horizon", train_args.horizon,
         )
     elif config.environment == "gridworld":
-        env = GridWorld(
+        environment = GridWorld(
             bayes=True,
-            size=overrides.get("size", train_args.size),
-            tprob=overrides.get("tprob", train_args.tprob),
-            reward_scheme=overrides.get("reward_scheme", train_args.reward_scheme),
-            reward_margin=overrides.get("reward_margin", train_args.reward_margin),
-            step_cost=overrides.get("step_cost", train_args.step_cost),
+            size= train_args.size,
+            tprob= train_args.tprob,
+            reward_scheme= train_args.reward_scheme,
+            reward_margin= train_args.reward_margin,
+            step_cost= train_args.step_cost,
         )
     elif config.environment == "crybaby":
-        env = CryingBaby(
+        environment = CryingBaby(
             bayes=True,
-            p_cry_if_hungry=overrides.get("p_cry_if_hungry", train_args.p_cry_if_hungry),
-            p_cry_if_full=overrides.get("p_cry_if_full", train_args.p_cry_if_full),
-            p_hungry_if_full_wait=overrides.get("p_hungry_if_full_wait", train_args.p_hungry_if_full_wait),
-            p_stay_hungry_wait=overrides.get("p_stay_hungry_wait", train_args.p_stay_hungry_wait),
-            p_full_if_feed=overrides.get("p_full_if_feed", train_args.p_full_if_feed),
-            reward_cry=overrides.get("reward_cry", train_args.reward_cry),
-            cost_feed=overrides.get("cost_feed", train_args.cost_feed),
+            p_cry_if_hungry= train_args.p_cry_if_hungry,
+            p_cry_if_full= train_args.p_cry_if_full,
+            p_hungry_if_full_wait= train_args.p_hungry_if_full_wait,
+            p_stay_hungry_wait= train_args.p_stay_hungry_wait,
+            p_full_if_feed= train_args.p_full_if_feed,
+            reward_cry= train_args.reward_cry,
+            cost_feed= train_args.cost_feed,
         )
     else:
         environment = train_args.environment
