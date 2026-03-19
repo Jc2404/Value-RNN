@@ -322,18 +322,35 @@ def fit_softmax_probe(
     }
 
 
-def make_probe_logger(episode, part_idx, probe_tag, num_epochs):
+
+def make_probe_logger(episode, part_idx, probe_tag, num_epochs, fit_index):
+    metric_prefix = f"probe_optim_fit_{int(fit_index):04d}"
+    metric_names = {
+        "train_kl": f"{metric_prefix}/train_kl",
+        "train_ce": f"{metric_prefix}/train_ce",
+        "eval_kl": f"{metric_prefix}/eval_kl",
+        "eval_ce": f"{metric_prefix}/eval_ce",
+    }
+    wandb.define_metric(f"{metric_prefix}/*", step_metric=f"{metric_prefix}/local_epoch")
+
     def _log(metrics):
         payload = dict(metrics)
         payload["train/episode"] = int(episode)
         payload["probe/part_idx"] = int(part_idx)
         payload["probe/type"] = probe_tag
+        payload["probe_optim/fit_index"] = int(fit_index)
+
         if "probe_optim/epoch" in payload:
             epoch = int(payload["probe_optim/epoch"])
-            payload["probe_optim/global_step"] = (
-                int(episode) * int(num_epochs) + epoch + int(part_idx) * max(1, int(num_epochs)) * 100000
-            )
+            payload[f"{metric_prefix}/local_epoch"] = epoch
+            payload[f"{metric_prefix}/global_step"] = int(fit_index) * int(num_epochs) + epoch
+            payload[metric_names["train_kl"]] = payload.get("probe_optim/train_kl")
+            payload[metric_names["train_ce"]] = payload.get("probe_optim/train_ce")
+            payload[metric_names["eval_kl"]] = payload.get("probe_optim/eval_kl")
+            payload[metric_names["eval_ce"]] = payload.get("probe_optim/eval_ce")
+
         wandb.log(payload)
+
     return _log
 
 
@@ -348,8 +365,6 @@ def main(args):
         config=config,
         save_code=True,
     )
-    wandb.define_metric("probe_optim/global_step")
-    wandb.define_metric("probe_optim/*", step_metric="probe_optim/global_step")
 
     wandb.save("*.py")
     wandb.save("agents/*.py")
@@ -364,6 +379,7 @@ def main(args):
     total_episodes = get_total_episodes(train_args)
     print("Total training episodes:", total_episodes)
 
+    fit_counter = 0
     for episode in range(0, total_episodes + 1, args.mine_period):
         agent.load(args.train_id, episode=episode)
         print(f"Loaded checkpoint at episode {episode}")
@@ -435,11 +451,14 @@ def main(args):
                     f"train_MSE={train_metrics['mse']:.6f}, eval_MSE={eval_metrics['mse']:.6f}"
                 )
             else:
+                probe_tag = "mlp" if args.use_MLP else "softmax"
+                fit_counter += 1
                 probe_logger = make_probe_logger(
                     episode=episode,
                     part_idx=part_idx,
-                    probe_tag="mlp" if args.use_MLP else "softmax",
+                    probe_tag=probe_tag,
                     num_epochs=args.probe_epochs,
+                    fit_index=fit_counter,
                 )
                 probe_state = fit_softmax_probe(
                     X_train,
