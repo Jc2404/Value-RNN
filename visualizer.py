@@ -20,6 +20,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
+from agents.classic_belief import BeliefPolicy
 from agents.drqn import DRQN
 from environments.tiger import Tiger
 from environments.crybaby import CryingBaby
@@ -115,22 +116,23 @@ def rollout_full(
     env_name: str,
     device: torch.device,
     epsilon: float = 0.0,
+    total_steps: Optional[int] = None,
 ) -> Dict[str, np.ndarray]:
     agent.Q.eval()
 
-    obs = env.reset()
-    done = False
+    if total_steps is None:
+        total_steps = int(env.horizon())
 
-    # IMPORTANT: must match training input = [a_{t-1}, o_t] (NO reward)
-    a0 = torch.zeros(env.action_size, dtype=torch.float32, device=device)
-    o0 = obs.to(device).float()
-    last = torch.cat([a0, o0], dim=0)  # [A+O]
-    hidden = None
-
-    belief_p, state01, obs_idx, act_idx = [], [], [], []
+    belief_p, state01, obs_idx, act_idx, terminal_after_step = [], [], [], [], []
     hs = []
 
-    for _t in range(env.horizon()):
+    obs = env.reset()
+    o0 = obs.to(device).float()
+    hidden = None
+    a_prev = torch.zeros(env.action_size, dtype=torch.float32, device=device)
+    last = torch.cat([a_prev, o0], dim=0)  # [A+O]
+
+    for _t in range(total_steps):
         b = env.get_belief()[0]
         belief_p.append(float(b[0].item()))
         state01.append(get_true_state01(env, env_name))
@@ -151,20 +153,72 @@ def rollout_full(
         hidden = hidden_next
 
         obs2, _rew, done = env.step(a)
-        o0 = obs2.to(device).float()
+        terminal_after_step.append(bool(done))
 
         a1 = onehot(env.action_size, a, device=device)
-        last = torch.cat([a1, o0], dim=0)  # [A+O]
-
         if done:
-            break
+            obs = env.reset()
+            o0 = obs.to(device).float()
+            hidden = None
+            a_prev = torch.zeros(env.action_size, dtype=torch.float32, device=device)
+        else:
+            o0 = obs2.to(device).float()
+            a_prev = a1
+
+        last = torch.cat([a_prev, o0], dim=0)  # [A+O]
 
     return {
         "belief_p": np.asarray(belief_p, dtype=np.float32),
         "state01": np.asarray(state01, dtype=np.int64),
         "obs_idx": np.asarray(obs_idx, dtype=np.int64),
         "act_idx": np.asarray(act_idx, dtype=np.int64),
+        "terminal_after_step": np.asarray(terminal_after_step, dtype=np.bool_),
         "h": np.asarray(hs, dtype=np.float32),   # <-- CRITICAL
+    }
+
+
+def rollout_belief_policy(
+    policy: BeliefPolicy,
+    env,
+    env_name: str,
+    epsilon: float = 0.0,
+    total_steps: Optional[int] = None,
+) -> Dict[str, np.ndarray]:
+    if total_steps is None:
+        total_steps = int(env.horizon())
+
+    obs = env.reset()
+
+    belief_p, state01, obs_idx, act_idx, terminal_after_step = [], [], [], [], []
+    episode_step = 0
+
+    for t in range(total_steps):
+        b = env.get_belief()[0]
+        belief_p.append(float(b[0].item()))
+        state01.append(get_true_state01(env, env_name))
+        obs_idx.append(int(obs.argmax().item()))
+
+        if random.random() < float(epsilon):
+            a = int(env.exploration())
+        else:
+            a = int(policy.act(env, remaining_steps=policy._remaining_steps(env, episode_step)))
+
+        act_idx.append(a)
+
+        obs, _rew, done = env.step(a)
+        terminal_after_step.append(bool(done))
+        if done:
+            obs = env.reset()
+            episode_step = 0
+        else:
+            episode_step += 1
+
+    return {
+        "belief_p": np.asarray(belief_p, dtype=np.float32),
+        "state01": np.asarray(state01, dtype=np.int64),
+        "obs_idx": np.asarray(obs_idx, dtype=np.int64),
+        "act_idx": np.asarray(act_idx, dtype=np.int64),
+        "terminal_after_step": np.asarray(terminal_after_step, dtype=np.bool_),
     }
 
 def _find_softmax_path(ep_dir: str, decoder_name: str, part_idx: int) -> Optional[str]:
@@ -287,6 +341,10 @@ def plot_rollout(
 ):
     T = len(data["belief_p"])
     x = np.arange(T)
+    terminal_steps = np.flatnonzero(data.get("terminal_after_step", np.zeros(T, dtype=np.bool_)))
+    belief_terminal_steps = np.flatnonzero(
+        data.get("belief_policy_terminal_after_step", np.zeros(T, dtype=np.bool_))
+    )
 
     fig = plt.figure(figsize=(12, 9))
     gs = fig.add_gridspec(
@@ -306,17 +364,46 @@ def plot_rollout(
         marker="o",
         linewidth=1.8,
         markersize=3,
-        label="belief p (first component)",
+        alpha=0.85,
+        label="network belief p",
     )
     ax1.set_ylim(-0.05, 1.05)
     ax1.set_ylabel("belief p")
     ax1.set_title(title)
     ax1.grid(True, alpha=0.3)
 
-    if "belief_p_lin" in data:
-        ax1.plot(x, data["belief_p_lin"], linewidth=2.0, alpha=0.85, label="linreg-decoded p")
-    if "belief_p_smx" in data:
-        ax1.plot(x, data["belief_p_smx"], linewidth=2.0, alpha=0.85, label="softmax-decoded p")
+    decoder_overlays = data.get("decoder_overlays", [])
+    decoder_styles = [
+        {"color": "tab:green", "linestyle": "-", "alpha": 0.85},
+        {"color": "tab:purple", "linestyle": "--", "alpha": 0.8},
+    ]
+    for idx, overlay in enumerate(decoder_overlays):
+        style = decoder_styles[min(idx, len(decoder_styles) - 1)]
+        ax1.plot(
+            x,
+            overlay["values"],
+            linewidth=2.0,
+            alpha=style["alpha"],
+            color=style["color"],
+            linestyle=style["linestyle"],
+            label=overlay["label"],
+        )
+    if "belief_policy_p" in data:
+        x_belief = np.arange(len(data["belief_policy_p"]))
+        ax1.plot(
+            x_belief,
+            data["belief_policy_p"],
+            linewidth=2.0,
+            linestyle="--",
+            alpha=0.6,
+            color="tab:orange",
+            label="belief-policy belief p",
+        )
+
+    for idx in terminal_steps:
+        ax1.axvline(idx + 0.5, color="black", linestyle=":", linewidth=1.0, alpha=0.35)
+    for idx in belief_terminal_steps:
+        ax1.axvline(idx + 0.5, color="tab:orange", linestyle="--", linewidth=1.0, alpha=0.18)
 
     ax1.legend(loc="upper right")
 
@@ -326,10 +413,33 @@ def plot_rollout(
         data["act_idx"],
         where="post",
         linewidth=2.5,
+        alpha=0.65,
+        color="tab:blue",
+        label="network action",
     )
-    ax_state.set_ylim(-0.1, 1.1)
+    if "belief_policy_act_idx" in data:
+        x_belief = np.arange(len(data["belief_policy_act_idx"]))
+        ax_state.step(
+            x_belief,
+            data["belief_policy_act_idx"],
+            where="post",
+            linewidth=2.5,
+            linestyle="--",
+            alpha=0.55,
+            color="tab:orange",
+            label="belief-policy action",
+        )
+        ax_state.legend(loc="upper right")
+
+    for idx in terminal_steps:
+        ax_state.axvline(idx + 0.5, color="black", linestyle=":", linewidth=1.0, alpha=0.35)
+    for idx in belief_terminal_steps:
+        ax_state.axvline(idx + 0.5, color="tab:orange", linestyle="--", linewidth=1.0, alpha=0.18)
+
+    ax_state.set_ylim(-0.5, len(act_labels) - 0.5)
     ax_state.set_yticks(range(len(act_labels)))
     ax_state.set_yticklabels(act_labels)
+    ax_state.set_ylabel("action")
     ax_state.grid(True, alpha=0.3)
 
     ax2 = fig.add_subplot(gs[2, 0], sharex=ax1)
@@ -356,6 +466,11 @@ def plot_rollout(
         label="true state",
     )
 
+    for idx in terminal_steps:
+        ax2.axvline(idx + 0.5, color="black", linestyle=":", linewidth=1.0, alpha=0.35)
+    for idx in belief_terminal_steps:
+        ax2.axvline(idx + 0.5, color="tab:orange", linestyle="--", linewidth=1.0, alpha=0.18)
+
     ax2.set_yticks(range(len(obs_labels)))
     ax2.set_yticklabels(obs_labels)
 
@@ -364,6 +479,46 @@ def plot_rollout(
     ax2.legend()
 
     ax2.set_xlabel("time step (t)")
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_return_comparison(
+    episodes: List[int],
+    network_returns: List[float],
+    belief_returns: List[float],
+    title: str,
+    save_path: str,
+):
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    ax.plot(
+        episodes,
+        network_returns,
+        marker="o",
+        linewidth=2.0,
+        alpha=0.85,
+        color="tab:blue",
+        label="trained network",
+    )
+    ax.plot(
+        episodes,
+        belief_returns,
+        marker="s",
+        linewidth=2.0,
+        linestyle="--",
+        alpha=0.65,
+        color="tab:orange",
+        label="belief policy",
+    )
+
+    ax.set_xlabel("checkpoint episode")
+    ax.set_ylabel("mean return")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best")
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     fig.savefig(save_path, dpi=200, bbox_inches="tight")
@@ -389,6 +544,7 @@ def main(args):
         hidden_size=train_args.hidden_size,
     )
     agent.Q.to(device)
+    belief_policy = BeliefPolicy() if args.compare_belief_policy else None
 
     # Determine checkpoints
     if args.end_episode < 0 or args.end_episode > getattr(train_args, "episodes", args.end_episode):
@@ -404,49 +560,107 @@ def main(args):
     name = args.name if args.name is not None else "noname"
     out_dir = os.path.join(args.report_dir, f"behavior_{name}_{args.train_id}")
     os.makedirs(out_dir, exist_ok=True)
+    network_returns, belief_returns = [], []
 
     for ep in checkpoints:
         agent.load(args.train_id, episode=ep)
         print(f"[loaded] train_id={args.train_id} episode={ep}", flush=True)
 
-        lin_probe = None
-        smx_state = None
+        decoder_states = []
 
         if args.overlay_decoders:
-            if args.decoder_name is None:
-                raise ValueError("--decoder_name is required when --overlay_decoders is set.")
+            decoder_names = args.decoder_name or []
+            if len(decoder_names) == 0:
+                raise ValueError("At least one --decoder_name is required when --overlay_decoders is set.")
+            if len(decoder_names) > 2:
+                raise ValueError("Use at most two --decoder_name flags: first for 1-layer, second for MLP.")
 
-            lin_probe = load_linreg_probe(args.decoder_weights_dir, args.train_id, ep, part_idx=0)
-            smx_state = load_softmax_probe(args.decoder_weights_dir, args.train_id, ep,
-                                        decoder_name=args.decoder_name, part_idx=0, device=device)
+            decoder_labels = ["1-layer decoded p", "MLP decoded p"]
+            for idx, decoder_name in enumerate(decoder_names):
+                state = load_softmax_probe(
+                    args.decoder_weights_dir,
+                    args.train_id,
+                    ep,
+                    decoder_name=decoder_name,
+                    part_idx=0,
+                    device=device,
+                )
+                if state is None:
+                    print(
+                        f"[warn] decoder not found for ep={ep}: {decoder_name} under "
+                        f"{os.path.join(args.decoder_weights_dir, 'decoders', args.train_id, f'ep_{ep}')}",
+                        flush=True,
+                    )
+                    continue
+                decoder_states.append((decoder_labels[idx], state))
 
-            if lin_probe is None and smx_state is None:
-                print(f"[warn] no decoders found for ep={ep} under "
-                    f"{os.path.join(args.decoder_weights_dir,'decoders',args.train_id,f'ep_{ep}')}", flush=True)
-
+        rollout_seed = args.seed + ep
+        set_seed(rollout_seed)
+        env, obs_labels, act_labels = build_env_from_args(args)
         data = rollout_full(
             agent=agent,
             env=env,
             env_name=args.environment,
             device=device,
             epsilon=args.epsilon,
+            total_steps=(args.plot_steps if args.plot_steps > 0 else None),
         )
+
+        if args.compare_belief_policy:
+            set_seed(rollout_seed)
+            belief_env, _, _ = build_env_from_args(args)
+            belief_data = rollout_belief_policy(
+                policy=belief_policy,
+                env=belief_env,
+                env_name=args.environment,
+                epsilon=args.epsilon,
+                total_steps=(args.plot_steps if args.plot_steps > 0 else None),
+            )
+            data["belief_policy_p"] = belief_data["belief_p"]
+            data["belief_policy_act_idx"] = belief_data["act_idx"]
+            data["belief_policy_terminal_after_step"] = belief_data["terminal_after_step"]
 
         if args.overlay_decoders and "h" in data:
             Htraj = torch.from_numpy(data["h"]).to(device).float()  # [T,H]
-
-            if lin_probe is not None:
-                p_lin = predict_linreg_belief(Htraj, lin_probe)[:, 0].detach().cpu().numpy()
-                data["belief_p_lin"] = p_lin.astype(np.float32)
-
-            if smx_state is not None:
-                p_smx = predict_softmax_belief(Htraj, smx_state)[:, 0].detach().cpu().numpy()
-                data["belief_p_smx"] = p_smx.astype(np.float32)
+            overlays = []
+            for label, state in decoder_states:
+                p = predict_softmax_belief(Htraj, state)[:, 0].detach().cpu().numpy()
+                overlays.append({"label": label, "values": p.astype(np.float32)})
+            if overlays:
+                data["decoder_overlays"] = overlays
 
         title = f"{args.environment} | train_id={args.train_id} | episode={ep} | eps-greedy={args.epsilon}"
         save_path = os.path.join(out_dir, f"ep_{ep}_{args.environment}.png")
         plot_rollout(data, obs_labels, act_labels, title, save_path)
         print(f"[saved] {save_path}", flush=True)
+
+        if args.compare_belief_policy:
+            eval_seed = args.seed + 100000 + ep
+
+            set_seed(eval_seed)
+            eval_env, _, _ = build_env_from_args(args)
+            net_mean_return, _ = agent.eval(eval_env, args.return_num_rollouts)
+            network_returns.append(float(net_mean_return))
+
+            set_seed(eval_seed)
+            belief_eval_env, _, _ = build_env_from_args(args)
+            belief_mean_return, _ = belief_policy.eval(belief_eval_env, args.return_num_rollouts)
+            belief_returns.append(float(belief_mean_return))
+
+    if args.compare_belief_policy:
+        return_path = os.path.join(out_dir, f"returns_{args.environment}.png")
+        return_title = (
+            f"{args.environment} return comparison | train_id={args.train_id} "
+            f"| rollouts={args.return_num_rollouts}"
+        )
+        plot_return_comparison(
+            episodes=checkpoints,
+            network_returns=network_returns,
+            belief_returns=belief_returns,
+            title=return_title,
+            save_path=return_path,
+        )
+        print(f"[saved] {return_path}", flush=True)
 
 
 if __name__ == "__main__":
@@ -460,13 +674,19 @@ if __name__ == "__main__":
     parser.add_argument("--end_episode", type=int, default=-1)
     parser.add_argument("--epsilon", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--plot_steps", type=int, default=-1,
+                        help="Total number of plotted decision steps. If <= 0, uses env.horizon().")
 
     parser.add_argument("--overlay_decoders", action="store_true",
                         help="Load frozen belief decoders and overlay decoded belief onto true belief.")
-    parser.add_argument("--decoder_name", type=str, default=None,
-                        help="Decoder run name used during training (prefix for saved softmax files).")
+    parser.add_argument("--decoder_name", type=str, action="append", default=None,
+                        help="Decoder run name. Pass once for the 1-layer decoder, and a second time for the MLP decoder.")
     parser.add_argument("--decoder_weights_dir", type=str, default="weights",
                         help="Root weights directory (expects <dir>/decoders/<train_id>/ep_<E>/...).")
+    parser.add_argument("--compare_belief_policy", action="store_true",
+                        help="Overlay a belief-policy rollout and plot return-vs-checkpoint against it.")
+    parser.add_argument("--return_num_rollouts", type=int, default=100,
+                        help="Number of rollouts per checkpoint when plotting network vs belief-policy return.")
 
     sub = parser.add_subparsers(dest="environment", required=True)
 
