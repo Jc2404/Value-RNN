@@ -187,6 +187,7 @@ def main(args):
         train_name = train_cfg.get("name", run_name)
         train_script = resolve_script_path(train_cfg.get("script", "train.py"), config_dir, repo_root)
         train_args = [
+            "--name",
             train_name,
             "--weights-dir",
             str(weights_dir),

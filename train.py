@@ -168,7 +168,8 @@ if __name__ == '__main__':
     parser = ArgumentParser(
         description='Experiments hidden states and beliefs',
     )
-    parser.add_argument('name', type=str, nargs='?', default=None)
+    parser.add_argument('positional_name', type=str, nargs='?', default=None)
+    parser.add_argument('--name', dest='name', type=str, default=None)
 
     # Architecture
     parser.add_argument('-C', '--cell', type=str, default='gru')
@@ -247,6 +248,9 @@ if __name__ == '__main__':
 
     # Parse command line arguments
     args = parser.parse_args()
+    if args.name is None:
+        args.name = args.positional_name
+    del args.positional_name
     print('\n'.join(f'\033[90m{k}=\033[0m{v}' for k, v in vars(args).items()))
 
     main(args)
