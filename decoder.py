@@ -228,6 +228,14 @@ def eval_softmax_probe(X, Y, state):
     }
 
 
+def softmax_probe_loss(log_probs, targets, loss_type="kl"):
+    if loss_type == "kl":
+        return F.kl_div(log_probs, targets, reduction="batchmean")
+    if loss_type == "mse":
+        return F.mse_loss(log_probs.exp(), targets)
+    raise ValueError(f"Unknown belief loss: {loss_type}")
+
+
 def fit_softmax_probe(
     X_train,
     Y_train,
@@ -241,6 +249,7 @@ def fit_softmax_probe(
     use_MLP=True,
     mlp_hidden_dim=128,
     mlp_dropout=0.0,
+    loss_type="kl",
     logger=None,
 ):
     device = X_train.device
@@ -262,8 +271,6 @@ def fit_softmax_probe(
         probe = SoftmaxProbe(H, K, add_bias=add_bias).to(device)
 
     opt = torch.optim.Adam(probe.parameters(), lr=lr)
-    criterion = nn.KLDivLoss(reduction="batchmean")
-
     for ep in range(epochs):
         probe.train()
         perm = torch.randperm(N, device=device)
@@ -277,7 +284,7 @@ def fit_softmax_probe(
             yb = Y_train[idx]
 
             log_probs = probe(xb)
-            loss = criterion(log_probs, yb)
+            loss = softmax_probe_loss(log_probs, yb, loss_type=loss_type)
             ce = -(yb * log_probs).sum(dim=-1).mean()
 
             opt.zero_grad()
@@ -291,18 +298,20 @@ def fit_softmax_probe(
         probe.eval()
         with torch.no_grad():
             eval_log_probs = probe(Xn_eval)
-            eval_kl = criterion(eval_log_probs, Y_eval).item()
+            eval_loss = softmax_probe_loss(eval_log_probs, Y_eval, loss_type=loss_type).item()
+            eval_kl = F.kl_div(eval_log_probs, Y_eval, reduction="batchmean").item()
             eval_ce = (-(Y_eval * eval_log_probs).sum(dim=-1).mean()).item()
 
-        avg_train_kl = total_train_loss / max(num_batches, 1)
+        avg_train_loss = total_train_loss / max(num_batches, 1)
         avg_train_ce = total_train_ce / max(num_batches, 1)
 
         if logger is not None:
             logger(
                 {
                     "probe_optim/epoch": ep + 1,
-                    "probe_optim/train_kl": avg_train_kl,
+                    "probe_optim/train_loss": avg_train_loss,
                     "probe_optim/train_ce": avg_train_ce,
+                    "probe_optim/eval_loss": eval_loss,
                     "probe_optim/eval_kl": eval_kl,
                     "probe_optim/eval_ce": eval_ce,
                 }
@@ -311,7 +320,8 @@ def fit_softmax_probe(
         if (ep + 1) % 50 == 0 or ep == 0:
             print(
                 f"[Probe epoch {ep + 1}/{epochs}] "
-                f"train_KL={avg_train_kl:.4f} eval_KL={eval_kl:.4f}"
+                f"train_{loss_type.upper()}={avg_train_loss:.4f} eval_{loss_type.upper()}={eval_loss:.4f} "
+                f"eval_KL={eval_kl:.4f}"
             )
 
     return {
@@ -326,8 +336,9 @@ def fit_softmax_probe(
 def make_probe_logger(episode, part_idx, probe_tag, num_epochs, fit_index):
     metric_prefix = f"probe_optim_fit_{int(fit_index):04d}"
     metric_names = {
-        "train_kl": f"{metric_prefix}/train_kl",
+        "train_loss": f"{metric_prefix}/train_loss",
         "train_ce": f"{metric_prefix}/train_ce",
+        "eval_loss": f"{metric_prefix}/eval_loss",
         "eval_kl": f"{metric_prefix}/eval_kl",
         "eval_ce": f"{metric_prefix}/eval_ce",
     }
@@ -344,8 +355,9 @@ def make_probe_logger(episode, part_idx, probe_tag, num_epochs, fit_index):
             epoch = int(payload["probe_optim/epoch"])
             payload[f"{metric_prefix}/local_epoch"] = epoch
             payload[f"{metric_prefix}/global_step"] = int(fit_index) * int(num_epochs) + epoch
-            payload[metric_names["train_kl"]] = payload.get("probe_optim/train_kl")
+            payload[metric_names["train_loss"]] = payload.get("probe_optim/train_loss")
             payload[metric_names["train_ce"]] = payload.get("probe_optim/train_ce")
+            payload[metric_names["eval_loss"]] = payload.get("probe_optim/eval_loss")
             payload[metric_names["eval_kl"]] = payload.get("probe_optim/eval_kl")
             payload[metric_names["eval_ce"]] = payload.get("probe_optim/eval_ce")
 
@@ -473,6 +485,7 @@ def main(args):
                     use_MLP=args.use_MLP,
                     mlp_hidden_dim=args.mlp_hidden_dim,
                     mlp_dropout=args.mlp_dropout,
+                    loss_type=args.belief_loss,
                     logger=probe_logger,
                 )
 
@@ -516,6 +529,7 @@ if __name__ == "__main__":
     parser.add_argument("--probe_lr", type=float, default=1e-2)
     parser.add_argument("--probe_batch_size", type=int, default=1024)
     parser.add_argument("--probe_standardize", action="store_true")
+    parser.add_argument("--belief_loss", choices=["kl", "mse"], default="kl")
     parser.add_argument("--mlp_hidden_dim", type=int, default=128)
     parser.add_argument("--mlp_dropout", type=float, default=0.0)
     parser.add_argument("--no_bias", action="store_true")

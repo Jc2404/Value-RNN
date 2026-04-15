@@ -1,0 +1,127 @@
+{
+  "run_name": "tmaze_1-length50_-stochasticity0.0",
+  "output_root": "runs",
+  "train": {
+    "enabled": true,
+    "name": "tmaze_agent",
+    "args": [
+      "--eval-period", "5",
+      "--num-rollouts", "50",
+      "--num-episodes", "4000",
+      "--batch-size", "32",
+      "--learning-rate", "0.001",
+      "--num-gradient-steps", "10",
+      "--target-period", "10",
+      "--epsilon", "0.2",
+      "--buffer-capacity", "8192",
+      "tmaze",
+      "--length", "50",
+      "--stochasticity", "0.0"
+    ]
+  },
+  "decoder_train": {
+    "enabled": true,
+    "name": "frozen_decoders",
+    "args": [
+      "--run_regression",
+      "--run_softmax_belief",
+      "--period", "100",
+      "--end_episode", "4000",
+      "--probe_num_samples", "10000",
+      "--probe_valid_size", "0.2",
+      "--probe_epochs", "300",
+      "--probe_lr", "0.001",
+      "--probe_batch_size", "1024",
+      "--belief_loss", "kl"
+    ]
+  },
+  "mi_train": {
+    "enabled": true,
+    "name": "mine_probe",
+    "mine_id": "mine_probe",
+    "args": [
+      "--agent_episode_start", "0",
+      "--agent_episode_end", "4000",
+      "--agent_episode_step", "100",
+      "--mine_num_samples", "10000",
+      "--mine_num_layers", "2",
+      "--mine_hidden_size", "256",
+      "--mine_alpha", "0.01",
+      "--mine_num_epochs", "200",
+      "--mine_batch_size", "1024",
+      "--mine_learning_rate", "0.001",
+      "--valid_size", "0.2",
+      "--use_wandb",
+      "--eval_after_train"
+    ]
+  },
+  "protocol_a": {
+    "enabled": true,
+    "name": "protocolA",
+    "args": [
+      "--run_mi",
+      "--run_regression",
+      "--run_softmax_belief",
+      "--period", "500",
+      "--end_episode", "4000",
+      "--probe_num_samples", "10000",
+      "--probe_valid_size", "0.2",
+      "--probe_epochs", "300",
+      "--probe_lr", "0.001",
+      "--probe_batch_size", "1024",
+      "--mine_num_samples", "10000",
+      "--mine_num_epochs", "400",
+      "--mine_batch_size", "1024",
+      "--mine_learning_rate", "0.001"
+    ],
+    "tests": [
+      {
+        "label": "stochasticity",
+        "flag": "--test_stochasticity"
+      },
+      {
+        "label": "length",
+        "flag": "--test_length"
+      }
+    ]
+  },
+  "protocol_b": {
+    "enabled": true,
+    "name": "protocolB",
+    "args": [
+      "--run_mi",
+      "--run_regression",
+      "--run_softmax_belief",
+      "--num_samples", "10000",
+      "--period", "500",
+      "--end_episode", "4000",
+      "--valid_size", "0.2",
+      "--probe_epochs", "300",
+      "--probe_lr", "0.001",
+      "--probe_batch_size", "1024",
+      "--mine_num_epochs", "400",
+      "--mine_batch_size", "1024",
+      "--mine_learning_rate", "0.001"
+    ],
+    "tests": [
+      {
+        "label": "stochasticity",
+        "flag": "--test_stochasticity"
+      },
+      {
+        "label": "length",
+        "flag": "--test_length"
+      }
+    ]
+  },
+  "belief_eval": {
+    "enabled": true,
+    "args": [
+      "--start-episode", "0",
+      "--max-episode", "4000",
+      "--period", "500",
+      "--output-prefix", "drqn_vs_belief",
+      "--total-steps", "5000"
+    ]
+  }
+}

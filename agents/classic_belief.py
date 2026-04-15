@@ -5,17 +5,12 @@ from typing import Dict, List, Tuple
 
 import torch
 
-try:
-    from .memory import Trajectory
-except Exception:
-    from memory import Trajectory
+from .memory import Trajectory
 
 
 class BeliefPolicy:
     """
-    Classical belief-based planner with a DRQN-like evaluation interface.
-
-    Supported exactly-discrete environments in the current repo:
+    Supported:
       - Tiger
       - CryingBaby
       - TMaze
@@ -23,14 +18,6 @@ class BeliefPolicy:
 
       - eval(environment, num_rollouts)
       - play(environment, epsilon=0.0, return_beliefs=False)
-
-    Notes
-    -----
-    1) This class does not train.
-    2) It requires `environment.bayes = True`, because it reads the exact belief
-       from `environment.get_belief()` at each step.
-    3) Planning is finite-horizon and done by recursive Bellman backup over the
-       exact belief, memoized on a rounded belief representation.
     """
 
     def __init__(self, planning_horizon=None, belief_round_ndigits=10):
@@ -38,10 +25,6 @@ class BeliefPolicy:
         self.belief_round_ndigits = int(belief_round_ndigits)
         self._cache: Dict[Tuple[str, int, Tuple[float, ...]], float] = {}
         self._env_signature = None
-
-    # ------------------------------------------------------------------
-    # Public interface (DRQN-like)
-    # ------------------------------------------------------------------
 
     def eval(self, environment, num_rollouts):
         sum_returns, disc_returns = 0.0, 0.0
@@ -57,7 +40,7 @@ class BeliefPolicy:
 
     def play(self, environment, epsilon=0.0, return_beliefs=False):
         self._prepare_environment(environment)
-        self._maybe_reset_cache(environment)
+        self._reset_cache(environment)
 
         beliefs = []
 
@@ -88,7 +71,7 @@ class BeliefPolicy:
 
     def act(self, environment, remaining_steps=None):
         self._prepare_environment(environment)
-        self._maybe_reset_cache(environment)
+        self._reset_cache(environment)
 
         if remaining_steps is None:
             remaining_steps = self._planning_horizon(environment)
@@ -99,7 +82,7 @@ class BeliefPolicy:
 
     def q_values(self, environment, belief, remaining_steps=None):
         self._prepare_environment(environment)
-        self._maybe_reset_cache(environment)
+        self._reset_cache(environment)
 
         if remaining_steps is None:
             remaining_steps = self._planning_horizon(environment)
@@ -110,10 +93,7 @@ class BeliefPolicy:
             qs.append(q)
         return torch.tensor(qs, dtype=torch.float32)
 
-    # ------------------------------------------------------------------
-    # Planning core
-    # ------------------------------------------------------------------
-
+    # Planning
     def _q_value(self, environment, belief, action, remaining_steps):
         if remaining_steps <= 0:
             return 0.0
@@ -133,7 +113,7 @@ class BeliefPolicy:
         return float(total)
 
     def _value(self, environment, belief, remaining_steps):
-        if remaining_steps <= 0:
+        if remaining_steps <= 0: # end
             return 0.0
 
         key = (self._env_signature, int(remaining_steps), self._belief_key(belief))
@@ -149,30 +129,27 @@ class BeliefPolicy:
         self._cache[key] = float(best)
         return float(best)
 
-    # ------------------------------------------------------------------
-    # Environment adaptation layer (kept internal)
-    # ------------------------------------------------------------------
-
+    # Environment-specifics, will incorporate into environment classes
     def _branches(self, environment, belief, action):
         name = environment.__class__.__name__.lower()
         if name == "tiger":
-            return self._branches_tiger(environment, belief, action)
+            return self._tiger(environment, belief, action)
         if name == "cryingbaby":
-            return self._branches_crybaby(environment, belief, action)
+            return self._crybaby(environment, belief, action)
         if name == "tmaze":
-            return self._branches_tmaze(environment, belief, action)
+            return self._tmaze(environment, belief, action)
         if name == "starkweatherenv":
-            return self._branches_starkweather(environment, belief, action)
+            return self._stark(environment, belief, action)
         raise NotImplementedError(
-            f"BeliefPolicy does not yet support environment type {environment.__class__.__name__}."
+            f"Does not support {environment.__class__.__name__} yet"
         )
 
-    def _branches_tiger(self, env, belief, action):
+    def _tiger(self, env, belief, action):
         b = self._normalize(belief)
         b_left = float(b[0].item())
         b_right = float(b[1].item())
 
-        # action ids in tiger.py: 0 listen, 1 open_left, 2 open_right
+        # action 0 listen, 1 open_left, 2 open_right
         if action == 0:
             p = float(env.listen_accuracy)
 
@@ -204,14 +181,12 @@ class BeliefPolicy:
             reward = b_left * float(env.reward_correct) + b_right * float(env.reward_wrong)
             return [(1.0, reward, b.clone(), True)]
 
-        raise ValueError(f"Unexpected tiger action {action}")
-
-    def _branches_crybaby(self, env, belief, action):
+    def _crybaby(self, env, belief, action):
         b = self._normalize(belief)
-        T = env.T[action].float()          # [s, s']
-        O = env.O.float()                  # [s', o]
+        T = env.T[action].float() # [s, s']
+        O = env.O.float() # [s', o]
 
-        b_pred = b @ T                     # [s']
+        b_pred = b @ T # [s']
         branches = []
 
         for o in range(env.observation_size):
@@ -228,16 +203,16 @@ class BeliefPolicy:
 
         return branches
 
-    def _branches_tmaze(self, env, belief, action):
+    def _tmaze(self, env, belief, action):
         b = self._normalize(belief)
-        T = env.T[action].float()          # [s', s]
-        O = env.O                          # dict[o] -> [s']
+        T = env.T[action].float() # [s', s]
+        O = env.O # dict[o] -> [s']
 
         # predicted next-state distribution
-        pred = T @ b                       # [s']
+        pred = T @ b # [s']
 
-        # joint mass over (s, s') used for expected immediate reward
-        joint = T * b.unsqueeze(0)         # [s', s]
+        # joint mass over (s, s') for expected immediate reward
+        joint = T * b.unsqueeze(0) # [s', s]
 
         branches = []
         for o in range(env.observation_size):
@@ -263,33 +238,27 @@ class BeliefPolicy:
 
         return branches
 
-    def _branches_starkweather(self, env, belief, action):
-        if action != 0:
-            raise ValueError("StarkweatherEnv only supports action 0")
-
+    def _stark(self, env, belief, action):
         b = self._normalize(belief)
-        T = env.T.float()                  # [s, s']
-        O = env.O.float()                  # [s, s', x]
+        T = env.T.float() # [s, s']
+        O = env.O.float() # [s, s', x]
 
         branches = []
         for x in range(env.observation_size):
-            weighted = T * O[:, :, x]      # [s, s']
-            next_unnorm = b @ weighted     # [s']
+            weighted = T * O[:, :, x] # [s, s']
+            next_unnorm = b @ weighted # [s']
             p_obs = float(next_unnorm.sum().item())
             if p_obs <= 0.0:
                 continue
 
             b_next = self._normalize(next_unnorm)
-            reward = 1.0 if x == 2 else 0.0   # NULL / STIM / REW
+            reward = 1.0 if x == 2 else 0.0
             terminal = (x == 2)
             branches.append((p_obs, reward, b_next, terminal))
 
         return branches
 
-    # ------------------------------------------------------------------
     # Environment-specific helpers
-    # ------------------------------------------------------------------
-
     def _tmaze_reward(self, env, s, s_next):
         length = int(env.length)
 
@@ -301,11 +270,11 @@ class BeliefPolicy:
         if length + 1 <= position <= length + 2:
             return 0.0
 
-        # Bumped into wall / no movement.
+        # Bumped into wall / no movement
         if position == next_position:
             return -0.1
 
-        # Corridor or crossroad.
+        # Corridor / crossroad
         if 0 <= next_position <= length:
             return 0.0
 
@@ -319,16 +288,12 @@ class BeliefPolicy:
 
         raise ValueError("Unexpected TMaze state transition")
 
-    # ------------------------------------------------------------------
-    # Utility
-    # ------------------------------------------------------------------
-
     def _prepare_environment(self, environment):
         if not hasattr(environment, "get_belief"):
-            raise ValueError("Environment must implement get_belief() for BeliefPolicy")
+            raise ValueError("Not implemented get_belief()")
         if hasattr(environment, "belief_type") and environment.belief_type != "exact":
             raise NotImplementedError(
-                f"BeliefPolicy only supports exact discrete beliefs, got {environment.belief_type}"
+                f"Only supports discrete beliefs, got {environment.belief_type}"
             )
         if hasattr(environment, "bayes") and (not environment.bayes):
             environment.bayes = True
@@ -351,13 +316,13 @@ class BeliefPolicy:
         vals = [round(float(x), self.belief_round_ndigits) for x in b.tolist()]
         return tuple(vals)
 
-    def _maybe_reset_cache(self, environment):
-        sig = self._environment_signature(environment)
+    def _reset_cache(self, environment):
+        sig = self._environment_config(environment)
         if sig != self._env_signature:
             self._cache = {}
             self._env_signature = sig
 
-    def _environment_signature(self, environment):
+    def _environment_config(self, environment): # temporary gpt solution to fix bug for reusing the policy
         items = [environment.__class__.__name__, int(environment.action_size), int(environment.observation_size)]
         for k, v in sorted(vars(environment).items()):
             if k in {"belief", "state", "steps", "terminal", "position", "last_position", "tiger_left", "goal_up"}:

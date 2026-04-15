@@ -246,6 +246,7 @@ class DRQN:
         epsilon,
         buffer_capacity,
         fill_buffer=False,
+        weights_dir="weights",
     ):
         """
         Trains the reinforcement learning agent on the specified environment
@@ -309,7 +310,7 @@ class DRQN:
 
                 if episode % (eval_period * 1) == 0:
                     print(f'Saving at step {episode}...')
-                    self.save(run_id, episode=episode)
+                    self.save(run_id, episode=episode, weights_dir=weights_dir)
 
             # Update target
             if episode % target_period == 0:
@@ -346,9 +347,12 @@ class DRQN:
                 'train/disc_return': mean_disc_return,
                 'train/num_transitions': num_transitions})
 
-        self.save(run_id, episode=num_episodes)
+        self.save(run_id, episode=num_episodes, weights_dir=weights_dir)
 
-    def save(self, run_id, episode=None):
+    def _checkpoint_path(self, run_id, episode=None, weights_dir='weights'):
+        return os.path.join(weights_dir, f'{run_id}-{episode}-{{}}.pth')
+
+    def save(self, run_id, episode=None, weights_dir='weights'):
         """
         Saves the weights of a trained agent on disk. Does not save the
         optimizer's momenta.
@@ -358,13 +362,15 @@ class DRQN:
                 Unique identifier for this training run
             episode: int
                 The episode at which the agent was saved
+            weights_dir: str
+                Directory where checkpoint files are stored
         """
-        os.makedirs('weights', exist_ok=True)
-        path = f'weights/{run_id}-{episode}-{{}}.pth'
+        os.makedirs(weights_dir, exist_ok=True)
+        path = self._checkpoint_path(run_id, episode=episode, weights_dir=weights_dir)
         torch.save(self.Q.state_dict(), path.format('Q'))
         torch.save(self.Q_tar.state_dict(), path.format('Q_tar'))
 
-    def load(self, run_id, episode=None):
+    def load(self, run_id, episode=None, weights_dir='weights'):
         """
         Loads the weights of an agent saved on disk. Does not load the
         optimizer's momenta.
@@ -374,8 +380,10 @@ class DRQN:
                 Unique identifier for this training run
             episode: int
                 The episode at which the agent was saved
+            weights_dir: str
+                Directory where checkpoint files are stored
         """
-        path = f'weights/{run_id}-{episode}-{{}}.pth'
+        path = self._checkpoint_path(run_id, episode=episode, weights_dir=weights_dir)
         self.Q.load_state_dict(torch.load(path.format('Q')))
         self.Q_tar.load_state_dict(torch.load(path.format('Q_tar')))
 

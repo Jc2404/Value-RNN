@@ -1,4 +1,6 @@
 import pandas as pd
+import matplotlib
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import numpy as np
 from argparse import ArgumentParser
@@ -81,7 +83,7 @@ for metric in metric_cols:
     plt.xlabel("Task value")
     plt.ylabel(metric)
     plt.xticks(var_df["task_value"])
-    plt.title(f"{metric} for base case at {args.task}={parser.parse_args().base_x}")
+    plt.title(f"{metric} for {args.task}={args.base_x}")
     plt.legend()
     plt.grid(False)
     if metric == "linreg_rsq-0":

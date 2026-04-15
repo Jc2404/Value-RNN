@@ -384,6 +384,14 @@ class MLPProbe(nn.Module):
         return F.log_softmax(self.net(x), dim=-1)
 
 
+def softmax_probe_loss(log_probs, targets, loss_type="kl"):
+    if loss_type == "kl":
+        return F.kl_div(log_probs, targets, reduction="batchmean")
+    if loss_type == "mse":
+        return F.mse_loss(log_probs.exp(), targets)
+    raise ValueError(f"Unknown belief loss: {loss_type}")
+
+
 def fit_softmax_probe_torch(X, Y, args):
     """
     Fits per belief-part probe on (X,Y) with KLDivLoss.
@@ -406,7 +414,6 @@ def fit_softmax_probe_torch(X, Y, args):
         probe = SoftmaxProbe(H, K).to(device)
 
     opt = torch.optim.Adam(probe.parameters(), lr=args.probe_lr)
-    criterion = nn.KLDivLoss(reduction="batchmean")
 
     probe.train()
     for _ in range(args.probe_epochs):
@@ -417,7 +424,7 @@ def fit_softmax_probe_torch(X, Y, args):
             yb = Y[idx]
 
             log_probs = probe(xb)
-            loss = criterion(log_probs, yb)
+            loss = softmax_probe_loss(log_probs, yb, loss_type=args.belief_loss)
 
             opt.zero_grad()
             loss.backward()
@@ -616,7 +623,7 @@ def main(args):
     if args.end_episode < 0 or args.end_episode > train_args.episodes:
         args.end_episode = train_args.episodes
     for episode in range(0, args.end_episode + 1, args.period):
-        agent.load(args.train_id, episode=episode)
+        agent.load(args.train_id, episode=episode, weights_dir=args.weights_dir)
         print(f"[episode {episode}] agent loaded", flush=True)
 
         episode_rows[episode] = []
@@ -796,6 +803,7 @@ if __name__ == "__main__":
     # W&B / report
     parser.add_argument("--wandb_project", type=str, default="decoder-protocolB")
     parser.add_argument("--report_dir", type=str, default="report")
+    parser.add_argument("--weights_dir", type=str, default="weights")
 
     # common sampling / schedule
     parser.add_argument("--num_samples", type=int, default=10000)
@@ -852,6 +860,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_mlp_probe", action="store_true")
     parser.add_argument("--mlp_hidden_dim", type=int, default=128)
     parser.add_argument("--mlp_dropout", type=float, default=0.0)
+    parser.add_argument("--belief_loss", choices=["kl", "mse"], default="kl")
 
     # MINE params
     parser.add_argument("--mine_num_layers", type=int, default=2)

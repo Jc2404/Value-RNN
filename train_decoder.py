@@ -19,6 +19,7 @@
 #   weights/decoders/<train_id>/ep_<E>/softmax_b<i>.pth
 
 import os
+import csv
 from argparse import ArgumentParser
 from typing import Dict, Tuple, List
 
@@ -37,6 +38,7 @@ from fix_decode_eval import (  # noqa: E402
     build_environment,
     fit_linreg_torch,
     eval_linreg_torch,
+    belief_probe_loss,
     SoftmaxProbe,
     MLPProbe,
     eval_belief_kl_probe,
@@ -71,6 +73,21 @@ def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
 
+def save_rows(path: str, rows: List[Dict]):
+    ensure_dir(os.path.dirname(path))
+    fieldnames = []
+    seen = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                fieldnames.append(key)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def save_linreg_probe(path: str, probe: Dict):
     """
     probe is dict returned by fit_linreg_torch (contains tensors + flags).
@@ -93,6 +110,7 @@ def save_softmax_probe(path: str, state: Dict, in_dim: int, out_dim: int, use_ml
         "in_dim": int(in_dim),
         "out_dim": int(out_dim),
         "standardize": bool(state["standardize"]),
+        "train_loss": state.get("train_loss", "kl"),
         "mean": state["mean"].detach().cpu() if state["mean"] is not None else None,
         "std": state["std"].detach().cpu() if state["std"] is not None else None,
         "probe_state_dict": {k: v.detach().cpu() for k, v in state["probe"].state_dict().items()},
@@ -110,6 +128,7 @@ def train_softmax_kl_with_logging(
     part_idx: int,
     episode: int,
     device: torch.device,
+    logger,
 ) -> Dict:
     """
     Same optimizer/criterion/shuffle structure as fit_belief_kl_probe in fix_decode_eval.py,
@@ -133,7 +152,6 @@ def train_softmax_kl_with_logging(
                         if args.sm_use_mlp else SoftmaxProbe(H, K, add_bias=True).to(device))
 
     opt = torch.optim.Adam(probe.parameters(), lr=args.probe_lr)
-    criterion = nn.KLDivLoss(reduction="batchmean")
 
     # W&B: separate decoder-step axis, but also attach episode for easy filtering
     # We'll log per epoch with a monotonically increasing integer:
@@ -149,7 +167,7 @@ def train_softmax_kl_with_logging(
             xb = Xtr_n[idx]
             yb = Ytr[idx]
             logp = probe(xb)
-            loss = criterion(logp, yb)
+            loss = belief_probe_loss(logp, yb, loss_type=args.belief_loss)
 
             opt.zero_grad()
             loss.backward()
@@ -166,7 +184,7 @@ def train_softmax_kl_with_logging(
             kl_tr, ce_tr = eval_belief_kl_probe(Xtr, Ytr, state)
             kl_va, ce_va = eval_belief_kl_probe(Xva, Yva, state)
 
-        wandb.log(
+        logger(
             {
                 "epoch": ep_i,
 
@@ -180,11 +198,17 @@ def train_softmax_kl_with_logging(
                 f"softmax/CE_eval_b{part_idx}": ce_va,
 
                 # Optional: training objective
-                f"softmax/loss_train_batchmeanKL_b{part_idx}": running / max(seen, 1),
+                f"softmax/loss_train_{args.belief_loss}_b{part_idx}": running / max(seen, 1),
             },
             step=ep_i,
         )
-    return {"probe": probe, "mean": mean, "std": std, "standardize": args.probe_standardize}
+    return {
+        "probe": probe,
+        "mean": mean,
+        "std": std,
+        "standardize": args.probe_standardize,
+        "train_loss": args.belief_loss,
+    }
 
 
 # -----------------------------
@@ -207,6 +231,8 @@ def main(args):
 
     # Root save dir
     root = os.path.join(args.weights_dir, "decoders", args.train_id)
+    if args.decoder_subdir is not None:
+        root = os.path.join(root, args.decoder_subdir)
     ensure_dir(root)
 
     for episode in range(0, args.end_episode + 1, args.period):
@@ -219,7 +245,7 @@ def main(args):
             num_layers=train_args.num_layers,
             hidden_size=train_args.hidden_size,
         )
-        agent.load(args.train_id, episode=episode)
+        agent.load(args.train_id, episode=episode, weights_dir=args.weights_dir)
         print(f"[episode {episode}] agent loaded", flush=True)
 
         # Sample hidden/beliefs on base env
@@ -242,9 +268,19 @@ def main(args):
         ep_dir = os.path.join(root, f"ep_{episode}")
         ensure_dir(ep_dir)
 
-        run = wandb.init(
+        run_base_name = args.name if args.name is not None else "decoder_train"
+        metrics_rows: List[Dict] = []
+
+        def log_metrics(payload: Dict, step=None):
+            wandb.log(payload, step=step)
+            row = dict(payload)
+            if step is not None:
+                row["step"] = step
+            metrics_rows.append(row)
+
+        wandb.init(
             project=args.wandb_project,
-            name=f"{args.name}_ep{episode}",
+            name=f"{run_base_name}_ep{episode}",
             group=args.name,
             job_type="decoder_probe",
             config={**(vars(train_args) | vars(args)), "checkpoint_episode": episode},
@@ -272,7 +308,7 @@ def main(args):
 
                 # Log at episode-level (use decoder/global_step = episode*probe_epochs)
                 for ep_i in range(args.probe_epochs):
-                    wandb.log(
+                    log_metrics(
                         {
                             "epoch": ep_i,
                             "checkpoint_episode": episode,
@@ -284,7 +320,6 @@ def main(args):
 
                 out_path = os.path.join(ep_dir, f"linreg_b{part_idx}.pth")
                 save_linreg_probe(out_path, probe)
-                wandb.finish()
 
         # -------------------------
         # (2) Softmax/KL probes
@@ -297,10 +332,11 @@ def main(args):
                     part_idx=part_idx,
                     episode=episode,
                     device=device,
+                    logger=log_metrics,
                 )
 
                 # Save weights
-                out_path = os.path.join(ep_dir, f"{args.name}_softmax_b{part_idx}.pth")
+                out_path = os.path.join(ep_dir, f"{run_base_name}_softmax_b{part_idx}.pth")
                 save_softmax_probe(
                     out_path,
                     state,
@@ -309,9 +345,12 @@ def main(args):
                     use_mlp=bool(args.sm_use_mlp),
                 )
 
+        if metrics_rows:
+            metrics_path = os.path.join(ep_dir, "metrics.csv")
+            save_rows(metrics_path, metrics_rows)
         print(f"[episode {episode}] saved decoders -> {ep_dir}", flush=True)
+        wandb.finish()
 
-    wandb.finish()
     print("Done.", flush=True)
 
 
@@ -325,6 +364,8 @@ if __name__ == "__main__":
     # W&B / outputs
     parser.add_argument("--wandb_project", type=str, default="decoder-train")
     parser.add_argument("--weights_dir", type=str, default="weights")
+    parser.add_argument("--decoder_subdir", type=str, default=None,
+                        help="Optional extra subdirectory under weights/decoders/<train_id>/ for this decoder run.")
 
     # ---- schedule / sampling (same names as fix_decode_eval.py)
     parser.add_argument("--period", type=int, default=100, help="Agent checkpoint interval.")
@@ -352,6 +393,8 @@ if __name__ == "__main__":
     # ---- belief KL probe
     parser.add_argument("--sm_use_mlp", action="store_true",
                         help="If set, use MLP probe instead of linear for belief KL.")
+    parser.add_argument("--belief_loss", choices=["kl", "mse"], default="kl",
+                        help="Training loss for the softmax belief probe.")
 
     args = parser.parse_args()
     get_run_statistic(args.train_id)

@@ -1,4 +1,7 @@
 # eval_mine_estimator.py
+import csv
+import os
+
 import wandb
 from argparse import ArgumentParser
 
@@ -6,6 +9,14 @@ from mine.mine import MutualInformationNeuralEstimator
 from utils import generate_hiddens_and_beliefs, get_run_statistic
 from probe_mi.build_env import select_device, build_environment, build_agent
 from probe_mi.mine_io import load_mine_config
+
+
+def save_rows(path, rows):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def build_mine_from_cfg(cfg, device):
@@ -57,12 +68,14 @@ def main(args):
     if args.use_wandb:
         wandb.init(project=args.wandb_project, name=args.name, config=vars(args))
 
+    rows = []
+
     # Loop over episodes
     for agent_episode in range(args.episode_start, args.episode_end + 1, args.episode_step):
         estimator_episode = agent_episode if args.match_estimator_episode else args.estimator_episode
 
         # Load agent checkpoint
-        agent.load(args.eval_train_id, episode=agent_episode)
+        agent.load(args.eval_train_id, episode=agent_episode, weights_dir=args.weights_dir)
         print(f"Loaded agent {args.eval_train_id} @ episode {agent_episode}")
 
         # Generate data for this checkpoint
@@ -75,15 +88,22 @@ def main(args):
 
         # Build/load estimator for this episode
         if args.use_saved_cfg:
-            cfg = load_mine_config(args.mine_id, estimator_episode)
+            cfg = load_mine_config(args.mine_id, estimator_episode, root=args.weights_dir)
             mine = build_mine_from_cfg(cfg, device)
         else:
             mine = build_mine_manual(hiddens, beliefs, args, device)
 
-        mine.load(args.mine_id, episode=estimator_episode)
+        mine.load(args.mine_id, episode=estimator_episode, weights_dir=args.weights_dir)
 
         mi = mine.estimate(hiddens, beliefs)
         print(f"Episode {agent_episode} (estimator {estimator_episode}): MI = {mi}")
+        rows.append({
+            "eval_train_id": args.eval_train_id,
+            "agent_episode": agent_episode,
+            "mine_id": args.mine_id,
+            "estimator_episode": estimator_episode,
+            "mi": float(mi),
+        })
 
         if args.use_wandb:
             key = "mine_eval/mi" if mine.belief_part is None else f"mine_eval/mi-{mine.belief_part}"
@@ -100,6 +120,12 @@ def main(args):
     if args.use_wandb:
         wandb.finish()
 
+    if args.results_dir and rows:
+        base_name = args.name if args.name is not None else args.mine_id
+        results_path = os.path.join(args.results_dir, f"mine_eval_{base_name}_{args.eval_train_id}.csv")
+        save_rows(results_path, rows)
+        print(f"Saved evaluation summary: {results_path}")
+
 
 if __name__ == "__main__":
     p = ArgumentParser("Evaluate saved MINE estimators across multiple agent checkpoints.")
@@ -114,6 +140,8 @@ if __name__ == "__main__":
 
     # Which estimator to load
     p.add_argument("--mine_id", type=str, required=True)
+    p.add_argument("--weights_dir", type=str, default="weights")
+    p.add_argument("--results_dir", type=str, default=None)
 
     # Matching mode
     p.add_argument(

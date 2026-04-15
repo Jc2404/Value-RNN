@@ -284,6 +284,14 @@ class MLPProbe(nn.Module):
         return F.log_softmax(self.net(x), dim=-1)
 
 
+def belief_probe_loss(log_probs, targets, loss_type="kl"):
+    if loss_type == "kl":
+        return F.kl_div(log_probs, targets, reduction="batchmean")
+    if loss_type == "mse":
+        return F.mse_loss(log_probs.exp(), targets)
+    raise ValueError(f"Unknown belief loss: {loss_type}")
+
+
 def fit_belief_kl_probe(X_train, Y_train, args):
     """
     Train once on base; freeze; eval elsewhere.
@@ -304,7 +312,6 @@ def fit_belief_kl_probe(X_train, Y_train, args):
              if args.use_mlp_probe else SoftmaxProbe(H, K, add_bias=True).to(device))
 
     opt = torch.optim.Adam(probe.parameters(), lr=args.probe_lr)
-    criterion = nn.KLDivLoss(reduction="batchmean")
 
     probe.train()
     for _ in range(args.probe_epochs):
@@ -314,7 +321,7 @@ def fit_belief_kl_probe(X_train, Y_train, args):
             xb = Xn[idx]
             yb = Y_train[idx]
             logp = probe(xb)
-            loss = criterion(logp, yb)
+            loss = belief_probe_loss(logp, yb, loss_type=args.belief_loss)
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -466,7 +473,7 @@ def main(args):
             num_layers=train_args.num_layers,
             hidden_size=train_args.hidden_size,
         )
-        agent.load(args.train_id, episode=episode)
+        agent.load(args.train_id, episode=episode, weights_dir=args.weights_dir)
         print(f"[episode {episode}] agent loaded", flush=True)
 
         episode_rows[episode] = []
@@ -716,6 +723,7 @@ if __name__ == "__main__":
     parser.add_argument("train_id", type=str)
     parser.add_argument("--wandb_project", type=str, default="protocolA-frozen-all")
     parser.add_argument("--report_dir", type=str, default="report")
+    parser.add_argument("--weights_dir", type=str, default="weights")
 
     # ---- schedule / sampling
     parser.add_argument("--period", type=int, default=100, help="Agent checkpoint interval.")
@@ -760,6 +768,8 @@ if __name__ == "__main__":
     # ---- belief KL probe
     parser.add_argument("--use_mlp_probe", action="store_true",
                         help="If set, use MLP probe instead of linear for belief KL.")
+    parser.add_argument("--belief_loss", choices=["kl", "mse"], default="kl",
+                        help="Training loss for the softmax belief probe.")
 
     # ---- state decoder
     parser.add_argument("--state_C", type=float, default=1.0,

@@ -1,0 +1,478 @@
+import os
+import json
+import csv
+import random
+from argparse import ArgumentParser
+from typing import Callable, Dict, List, Tuple
+
+import torch
+
+from agents.drqn import DRQN
+try:
+    from agents.classic_belief import BeliefPolicy
+except ImportError:
+    from classic_belief import BeliefPolicy
+from agents.memory import Trajectory
+
+from environments.tmaze import TMaze
+from environments.tiger import Tiger
+from environments.crybaby import CryingBaby
+from environments.irrelevant import Irrelevant
+from environments.starkweather import StarkweatherEnv
+from utils import get_run_statistic
+
+
+def _resolve_arg(args, train_args, name: str, fallback=None):
+    value = getattr(args, name, None)
+    if value is not None:
+        return value
+    if hasattr(train_args, name):
+        return getattr(train_args, name)
+    return fallback
+
+
+def make_environment_factory(args, train_args) -> Callable[[], object]:
+    environment_name = args.environment or train_args.environment
+
+    if environment_name == 'tmaze':
+        return lambda: TMaze(
+            length=_resolve_arg(args, train_args, 'length', 20),
+            stochasticity=_resolve_arg(args, train_args, 'stochasticity', 0.0),
+            bayes=True,
+        )
+    if environment_name == 'tiger':
+        return lambda: Tiger(
+            listen_accuracy=_resolve_arg(args, train_args, 'listen_accuracy', 0.85),
+            reward_listen=_resolve_arg(args, train_args, 'reward_listen', -1.0),
+            reward_correct=_resolve_arg(args, train_args, 'reward_correct', 10.0),
+            reward_wrong=_resolve_arg(args, train_args, 'reward_wrong', -100.0),
+            horizon=_resolve_arg(args, train_args, 'horizon', 20),
+            bayes=True,
+        )
+    if environment_name == 'crybaby':
+        return lambda: CryingBaby(
+            p_hungry_if_full_wait=_resolve_arg(args, train_args, 'p_hungry_if_full_wait', 0.10),
+            p_stay_hungry_wait=_resolve_arg(args, train_args, 'p_stay_hungry_wait', 0.90),
+            p_full_if_feed=_resolve_arg(args, train_args, 'p_full_if_feed', 0.95),
+            p_cry_if_hungry=_resolve_arg(args, train_args, 'p_cry_if_hungry', 0.90),
+            p_cry_if_full=_resolve_arg(args, train_args, 'p_cry_if_full', 0.10),
+            p0_hungry=_resolve_arg(args, train_args, 'p0_hungry', 0.50),
+            reward_cry=_resolve_arg(args, train_args, 'reward_cry', -1.0),
+            cost_feed=_resolve_arg(args, train_args, 'cost_feed', -0.2),
+            reward_quiet=_resolve_arg(args, train_args, 'reward_quiet', 0.0),
+            horizon=_resolve_arg(args, train_args, 'horizon', 50),
+            bayes=True,
+        )
+    if environment_name == 'starkweather':
+        return lambda: StarkweatherEnv(
+            bayes=True,
+            p_omission=_resolve_arg(args, train_args, 'p_omission', 0.1),
+            bin_size=_resolve_arg(args, train_args, 'bin_size', 0.2),
+            iti_hazard=_resolve_arg(args, train_args, 'iti_hazard', 1 / 65.0),
+            iti_min=_resolve_arg(args, train_args, 'iti_min', 0),
+            nITI_microstates=_resolve_arg(args, train_args, 'nITI_microstates', 10),
+            max_steps=_resolve_arg(args, train_args, 'max_steps', 200),
+        )
+    raise ValueError(f"Unsupported environment for belief planner: {environment_name}")
+
+
+def make_wrapped_environment_factory(args, train_args) -> Callable[[], object]:
+    base_factory = make_environment_factory(args, train_args)
+
+    def _factory():
+        env = base_factory()
+        irrelevant_size = _resolve_arg(args, train_args, 'irrelevant', 0)
+        if irrelevant_size:
+            env = Irrelevant(env, state_size=irrelevant_size, bayes=True)
+        return env
+
+    return _factory
+
+
+def build_agent_for_episode(args, train_args, env, episode: int):
+    algorithm = _resolve_arg(args, train_args, 'algorithm', 'drqn')
+    if algorithm != 'drqn':
+        raise NotImplementedError(f"Unsupported algorithm for belief comparison: {algorithm}")
+
+    agent = DRQN(
+        cell=_resolve_arg(args, train_args, 'cell', 'gru'),
+        action_size=env.action_size,
+        observation_size=env.observation_size,
+        hidden_size=_resolve_arg(args, train_args, 'hidden_size', 32),
+        num_layers=_resolve_arg(args, train_args, 'num_layers', 2),
+    )
+    agent.load(args.run_id, episode=episode, weights_dir=args.weights_dir)
+    agent.Q.eval()
+    agent.Q_tar.eval()
+    return agent
+
+
+def _move_hidden_to_device(hidden_states, device):
+    if hidden_states is None:
+        return None
+    if isinstance(hidden_states, (tuple, list)):
+        return tuple(h.to(device) for h in hidden_states)
+    return hidden_states.to(device)
+
+
+def rollout_drqn_episode(agent, env, epsilon: float = 0.0) -> Tuple[Trajectory, int]:
+    trajectory, = agent.play(env, epsilon=epsilon)
+    return trajectory, int(trajectory.num_transitions)
+
+
+def rollout_planner_episode(planner, env, epsilon: float = 0.0) -> Tuple[Trajectory, int]:
+    trajectory, = planner.play(env, epsilon=epsilon)
+    return trajectory, int(trajectory.num_transitions)
+
+
+def eval_mean_returns_with_step_budget(rollout_fn, env_factory, total_steps: int) -> Tuple[float, float, int, int]:
+    sum_returns = 0.0
+    sum_disc_returns = 0.0
+    episodes = 0
+    steps = 0
+
+    while steps < total_steps:
+        env = env_factory()
+        trajectory, ep_steps = rollout_fn(env)
+        if ep_steps <= 0:
+            raise RuntimeError("Encountered an episode with zero transitions; cannot use step budget reliably.")
+
+        sum_returns += float(trajectory.get_cumulative_reward())
+        sum_disc_returns += float(trajectory.get_cumulative_reward(env.gamma))
+        episodes += 1
+        steps += ep_steps
+
+    mean_return = sum_returns / max(episodes, 1)
+    mean_disc_return = sum_disc_returns / max(episodes, 1)
+    return mean_return, mean_disc_return, episodes, steps
+
+
+def evaluate_action_agreement_and_regret_step_budget(agent, planner, env_factory, total_steps: int, epsilon: float = 0.0):
+    device = next(agent.Q.parameters()).device
+
+    per_episode: List[Dict] = []
+    per_step: List[Dict] = []
+
+    total_executed_steps = 0
+    episode_idx = 0
+    global_agreement_sum = 0
+    global_regret_sum = 0.0
+    global_discounted_regret_sum = 0.0
+
+    while total_executed_steps < total_steps:
+        env = env_factory()
+        planner._prepare_environment(env)
+        planner._reset_cache(env)
+
+        obs = env.reset()
+        trajectory = Trajectory(env.action_size, env.observation_size)
+        trajectory.add(None, None, obs)
+
+        hidden_states = None
+        n_steps = 0
+        agreement_sum = 0
+        regret_sum = 0.0
+        discounted_regret_sum = 0.0
+
+        for t in range(env.horizon()):
+            tau_t = trajectory.get_last_observed().view(1, 1, -1).to(device)
+            hidden_states = _move_hidden_to_device(hidden_states, device)
+            with torch.no_grad():
+                drqn_values, hidden_states = agent.Q(tau_t, hidden_states)
+            drqn_q = drqn_values.flatten().detach().cpu()
+
+            if random.random() < epsilon:
+                drqn_action = env.exploration()
+            else:
+                drqn_action = int(torch.argmax(drqn_q).item())
+
+            belief = env.get_belief()[0].detach().clone().float()
+            remaining_steps = planner._remaining_steps(env, t)
+            planner_q = planner.q_values(env, belief, remaining_steps).detach().cpu()
+            planner_action = int(torch.argmax(planner_q).item())
+
+            agreement = int(drqn_action == planner_action)
+            regret = float(torch.max(planner_q).item() - planner_q[drqn_action].item())
+
+            agreement_sum += agreement
+            regret_sum += regret
+            discounted_regret_sum += (float(env.gamma) ** t) * regret
+            n_steps += 1
+
+            global_agreement_sum += agreement
+            global_regret_sum += regret
+            global_discounted_regret_sum += (float(env.gamma) ** t) * regret
+            total_executed_steps += 1
+
+            per_step.append({
+                'episode': episode_idx,
+                'timestep': t,
+                'global_step': total_executed_steps,
+                'remaining_steps': remaining_steps,
+                'drqn_action': drqn_action,
+                'planner_action': planner_action,
+                'action_agreement': agreement,
+                'step_regret': regret,
+                'planner_q_max': float(torch.max(planner_q).item()),
+                'planner_q_drqn_action': float(planner_q[drqn_action].item()),
+                'drqn_q_max': float(torch.max(drqn_q).item()),
+                'drqn_q_chosen_action': float(drqn_q[drqn_action].item()),
+            })
+
+            obs, reward, done = env.step(drqn_action)
+            trajectory.add(drqn_action, reward, obs, terminal=done)
+
+            if done:
+                break
+
+        ep_return = float(trajectory.get_cumulative_reward())
+        ep_disc_return = float(trajectory.get_cumulative_reward(env.gamma))
+        ep_agreement = agreement_sum / max(n_steps, 1)
+        ep_mean_step_regret = regret_sum / max(n_steps, 1)
+
+        per_episode.append({
+            'episode': episode_idx,
+            'num_steps': n_steps,
+            'drqn_return': ep_return,
+            'drqn_disc_return': ep_disc_return,
+            'action_agreement_rate': ep_agreement,
+            'episode_regret': regret_sum,
+            'discounted_episode_regret': discounted_regret_sum,
+            'mean_step_regret': ep_mean_step_regret,
+        })
+        episode_idx += 1
+
+    num_episodes = len(per_episode)
+    mean_episode_regret = sum(x['episode_regret'] for x in per_episode) / max(num_episodes, 1)
+    mean_discounted_episode_regret = sum(x['discounted_episode_regret'] for x in per_episode) / max(num_episodes, 1)
+    mean_drqn_return = sum(x['drqn_return'] for x in per_episode) / max(num_episodes, 1)
+    mean_drqn_disc_return = sum(x['drqn_disc_return'] for x in per_episode) / max(num_episodes, 1)
+
+    step_weighted_agreement = global_agreement_sum / max(total_executed_steps, 1)
+    step_weighted_mean_regret = global_regret_sum / max(total_executed_steps, 1)
+    step_weighted_mean_discounted_regret = global_discounted_regret_sum / max(total_executed_steps, 1)
+
+    return {
+        'total_executed_steps': total_executed_steps,
+        'num_episodes': num_episodes,
+        'step_weighted_agreement_rate': step_weighted_agreement,
+        'step_weighted_mean_regret': step_weighted_mean_regret,
+        'step_weighted_mean_discounted_regret': step_weighted_mean_discounted_regret,
+        'mean_episode_regret': mean_episode_regret,
+        'mean_discounted_episode_regret': mean_discounted_episode_regret,
+        'mean_drqn_return_from_comparison_rollouts': mean_drqn_return,
+        'mean_drqn_disc_return_from_comparison_rollouts': mean_drqn_disc_return,
+    }, per_episode, per_step
+
+
+def save_csv(path: str, rows: List[Dict]):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not rows:
+        with open(path, 'w', newline='', encoding='utf-8') as f:
+            f.write('')
+        return
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def get_eval_episodes(args) -> List[int]:
+    if args.episodes_list:
+        vals = [int(x.strip()) for x in args.episodes_list.split(',') if x.strip()]
+        if not vals:
+            raise ValueError("--episodes-list was provided but no valid episodes were parsed.")
+        return vals
+
+    if args.max_episode is None:
+        return [int(args.episode)]
+
+    start = int(args.start_episode)
+    end = int(args.max_episode)
+    period = int(args.period)
+    if period <= 0:
+        raise ValueError("--period must be positive.")
+    if end < start:
+        raise ValueError("--max-episode must be >= --start-episode.")
+    return list(range(start, end + 1, period))
+
+
+def evaluate_single_checkpoint(args, train_args, env_factory, episode: int) -> Tuple[Dict, List[Dict], List[Dict]]:
+    env_for_shapes = env_factory()
+    agent = build_agent_for_episode(args, train_args, env_for_shapes, episode)
+    planner = BeliefPolicy(
+        planning_horizon=args.planning_horizon,
+        belief_round_ndigits=args.belief_round_ndigits,
+    )
+
+    drqn_mean_return, drqn_mean_disc_return, drqn_eval_episodes, drqn_eval_steps = eval_mean_returns_with_step_budget(
+        rollout_fn=lambda env: rollout_drqn_episode(agent, env, epsilon=0.0),
+        env_factory=env_factory,
+        total_steps=args.total_steps,
+    )
+    planner_mean_return, planner_mean_disc_return, planner_eval_episodes, planner_eval_steps = eval_mean_returns_with_step_budget(
+        rollout_fn=lambda env: rollout_planner_episode(planner, env, epsilon=0.0),
+        env_factory=env_factory,
+        total_steps=args.total_steps,
+    )
+
+    compare_summary, per_episode, per_step = evaluate_action_agreement_and_regret_step_budget(
+        agent=agent,
+        planner=planner,
+        env_factory=env_factory,
+        total_steps=args.total_steps,
+        epsilon=args.epsilon,
+    )
+
+    summary = {
+        'run_id': args.run_id,
+        'agent_episode': int(episode),
+        'environment': args.environment,
+        'total_steps_budget': args.total_steps,
+        'planner_horizon': args.planning_horizon,
+        'belief_round_ndigits': args.belief_round_ndigits,
+        'metric_1_drqn_mean_return': float(drqn_mean_return),
+        'metric_1_planner_mean_return': float(planner_mean_return),
+        'metric_1_return_gap_planner_minus_drqn': float(planner_mean_return - drqn_mean_return),
+        'metric_1_drqn_mean_disc_return': float(drqn_mean_disc_return),
+        'metric_1_planner_mean_disc_return': float(planner_mean_disc_return),
+        'metric_1_disc_return_gap_planner_minus_drqn': float(planner_mean_disc_return - drqn_mean_disc_return),
+        'metric_1_drqn_eval_num_episodes': int(drqn_eval_episodes),
+        'metric_1_planner_eval_num_episodes': int(planner_eval_episodes),
+        'metric_1_drqn_eval_total_steps': int(drqn_eval_steps),
+        'metric_1_planner_eval_total_steps': int(planner_eval_steps),
+        'metric_2_step_weighted_action_agreement_rate': float(compare_summary['step_weighted_agreement_rate']),
+        'metric_3_step_weighted_mean_regret': float(compare_summary['step_weighted_mean_regret']),
+        'metric_3_step_weighted_mean_discounted_regret': float(compare_summary['step_weighted_mean_discounted_regret']),
+        'comparison_num_episodes': int(compare_summary['num_episodes']),
+        'comparison_total_executed_steps': int(compare_summary['total_executed_steps']),
+        'comparison_mean_episode_regret': float(compare_summary['mean_episode_regret']),
+        'comparison_mean_discounted_episode_regret': float(compare_summary['mean_discounted_episode_regret']),
+        'comparison_rollout_mean_drqn_return': float(compare_summary['mean_drqn_return_from_comparison_rollouts']),
+        'comparison_rollout_mean_drqn_disc_return': float(compare_summary['mean_drqn_disc_return_from_comparison_rollouts']),
+    }
+
+    for row in per_episode:
+        row['agent_episode'] = int(episode)
+    for row in per_step:
+        row['agent_episode'] = int(episode)
+
+    return summary, per_episode, per_step
+
+
+def main(args):
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+
+    train_args = get_run_statistic(args.run_id)
+    train_environment = getattr(train_args, 'environment', None)
+    if args.environment is not None and train_environment is not None and args.environment != train_environment:
+        raise ValueError(
+            f"Environment mismatch: checkpoint run {args.run_id} was trained on "
+            f"{train_environment}, but evaluator was asked to use {args.environment}."
+        )
+
+    if args.environment is None:
+        args.environment = train_environment
+
+    env_factory = make_wrapped_environment_factory(args, train_args)
+    eval_episodes = get_eval_episodes(args)
+
+    all_summaries: List[Dict] = []
+    all_per_episode: List[Dict] = []
+    all_per_step: List[Dict] = []
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    for ckpt_episode in eval_episodes:
+        summary, per_episode, per_step = evaluate_single_checkpoint(args, train_args, env_factory, ckpt_episode)
+        all_summaries.append(summary)
+        all_per_episode.extend(per_episode)
+        all_per_step.extend(per_step)
+        print(json.dumps(summary, indent=2))
+
+    summary_json_path = os.path.join(args.output_dir, f'{args.run_id}_{args.output_prefix}_all_summaries.json')
+    summary_csv_path = os.path.join(args.output_dir, f'{args.run_id}_{args.output_prefix}_summary_table.csv')
+    per_episode_path = os.path.join(args.output_dir, f'{args.run_id}_{args.output_prefix}_per_episode.csv')
+    per_step_path = os.path.join(args.output_dir, f'{args.run_id}_{args.output_prefix}_per_step.csv')
+
+    with open(summary_json_path, 'w', encoding='utf-8') as f:
+        json.dump(all_summaries, f, indent=2)
+    save_csv(summary_csv_path, all_summaries)
+    save_csv(per_episode_path, all_per_episode)
+    save_csv(per_step_path, all_per_step)
+
+    print(f"Saved checkpoint summaries to: {summary_json_path}")
+    print(f"Saved checkpoint summary table to: {summary_csv_path}")
+    print(f"Saved per-episode metrics to: {per_episode_path}")
+    print(f"Saved per-step metrics to: {per_step_path}")
+
+
+if __name__ == '__main__':
+    parser = ArgumentParser(description='Evaluate DRQN checkpoints against belief forward search planner using a total-step budget.')
+
+    parser.add_argument('--run-id', type=str, required=True)
+    parser.add_argument('--episode', type=int, default=None,
+                        help='Single checkpoint episode to evaluate when --max-episode is not provided.')
+    parser.add_argument('--start-episode', type=int, default=0)
+    parser.add_argument('--max-episode', type=int, default=None)
+    parser.add_argument('--period', type=int, default=500)
+    parser.add_argument('--episodes-list', type=str, default=None,
+                        help='Optional comma-separated explicit checkpoint list, e.g. 0,500,1000')
+
+    parser.add_argument('--output-dir', type=str, default='results')
+    parser.add_argument('--output-prefix', type=str, default='drqn_vs_belief_period')
+    parser.add_argument('--weights-dir', dest='weights_dir', type=str, default='weights')
+    parser.add_argument('--total-steps', type=int, default=5000)
+    parser.add_argument('--epsilon', type=float, default=0.0)
+    parser.add_argument('--seed', type=int, default=0)
+
+    parser.add_argument('--cell', type=str, default=None,
+                        help='Optional architecture override. Defaults to the saved training config.')
+    parser.add_argument('--hidden-size', type=int, default=None,
+                        help='Optional architecture override. Defaults to the saved training config.')
+    parser.add_argument('--num-layers', type=int, default=None,
+                        help='Optional architecture override. Defaults to the saved training config.')
+    parser.add_argument('--irrelevant', type=int, default=None,
+                        help='Optional irrelevant-wrapper override. Defaults to the saved training config.')
+
+    parser.add_argument('--planning-horizon', type=int, default=None)
+    parser.add_argument('--belief-round-ndigits', type=int, default=10)
+
+    subparsers = parser.add_subparsers(dest='environment', required=False)
+
+    tmaze = subparsers.add_parser('tmaze')
+    tmaze.add_argument('--length', type=int, default=None)
+    tmaze.add_argument('--stochasticity', type=float, default=None)
+
+    tiger = subparsers.add_parser('tiger')
+    tiger.add_argument('--listen-accuracy', type=float, default=None)
+    tiger.add_argument('--reward-listen', type=float, default=None)
+    tiger.add_argument('--reward-correct', type=float, default=None)
+    tiger.add_argument('--reward-wrong', type=float, default=None)
+    tiger.add_argument('--horizon', type=int, default=None)
+
+    crybaby = subparsers.add_parser('crybaby')
+    crybaby.add_argument('--p_hungry_if_full_wait', type=float, default=None)
+    crybaby.add_argument('--p_stay_hungry_wait', type=float, default=None)
+    crybaby.add_argument('--p_full_if_feed', type=float, default=None)
+    crybaby.add_argument('--p_cry_if_hungry', type=float, default=None)
+    crybaby.add_argument('--p_cry_if_full', type=float, default=None)
+    crybaby.add_argument('--p0_hungry', type=float, default=None)
+    crybaby.add_argument('--reward_cry', type=float, default=None)
+    crybaby.add_argument('--reward_quiet', type=float, default=None)
+    crybaby.add_argument('--cost_feed', type=float, default=None)
+    crybaby.add_argument('--horizon', type=int, default=None)
+
+    stark = subparsers.add_parser('starkweather')
+    stark.add_argument('--p_omission', type=float, default=None)
+    stark.add_argument('--bin_size', type=float, default=None)
+    stark.add_argument('--iti_hazard', type=float, default=None)
+    stark.add_argument('--iti_min', type=float, default=None)
+    stark.add_argument('--nITI_microstates', type=int, default=None)
+    stark.add_argument('--max_steps', type=int, default=None)
+
+    args = parser.parse_args()
+    if args.max_episode is None and args.episode is None and args.episodes_list is None:
+        parser.error('Provide either --episode, --max-episode/--period, or --episodes-list.')
+    main(args)

@@ -15,3 +15,6 @@ mine/__pycache__/
 help_merge.py
 legacy/
 Codex.dmg
+runs/
+results/
+pipeline\__pycache__/

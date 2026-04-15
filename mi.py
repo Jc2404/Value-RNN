@@ -122,7 +122,7 @@ def main(args):
     print(config.episodes)
     for episode in range(0, config.episodes + 1, args.mine_period):
 
-        agent.load(args.train_id, episode=episode)
+        agent.load(args.train_id, episode=episode, weights_dir=args.weights_dir)
         print('agent loaded')
 
         hiddens, beliefs = generate_hiddens_and_beliefs(
@@ -162,7 +162,7 @@ def main(args):
             batch_size=args.mine_batch_size, lambd=args.mine_lambda,
             valid_size=args.valid_size)
         print('mine calculated')
-        mine.save(wandb.run.id, episode=episode)
+        mine.save(wandb.run.id, episode=episode, weights_dir=args.weights_dir)
 
         if not args.train_set:
             hiddens, beliefs = generate_hiddens_and_beliefs(
@@ -222,6 +222,7 @@ if __name__ == '__main__':
     parser.add_argument('--approximate', action='store_true')
 
     parser.add_argument('--epsilon', type=float, default=0.0)
+    parser.add_argument('--weights-dir', dest='weights_dir', type=str, default='weights')
 
     # Parse command line arguments
     args = parser.parse_args()

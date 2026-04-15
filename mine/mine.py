@@ -402,7 +402,10 @@ class MutualInformationNeuralEstimator(nn.Module):
 
         return (T_joint - T_pom_logmeanexp).item()
 
-    def save(self, run_id, episode=None):
+    def _checkpoint_path(self, run_id, episode=None, weights_dir="weights"):
+        return os.path.join(weights_dir, f"{run_id}-{episode}-{{}}.pth")
+
+    def save(self, run_id, episode=None, weights_dir="weights"):
         """
         Saves the weights of a trained estimator on disk. Does not save the
         optimizer's momenta.
@@ -412,12 +415,14 @@ class MutualInformationNeuralEstimator(nn.Module):
                 Unique identifier for the training run
             episode: int
                 The episode at which the agent was saved
+            weights_dir: str
+                Directory where checkpoint files are stored
         """
-        os.makedirs('weights', exist_ok=True)
-        path = f'weights/{run_id}-{episode}-{{}}.pth'
+        os.makedirs(weights_dir, exist_ok=True)
+        path = self._checkpoint_path(run_id, episode=episode, weights_dir=weights_dir)
         torch.save(self.state_dict(), path.format('T'))
 
-    def load(self, run_id, episode=None):
+    def load(self, run_id, episode=None, weights_dir="weights"):
         """Loads the weights of an estimator saved on disk. Does not load the
         optimizer's momenta.
 
@@ -426,6 +431,8 @@ class MutualInformationNeuralEstimator(nn.Module):
                 Unique identifier for the training run
             episode: int
                 The episode at which the agent was saved
+            weights_dir: str
+                Directory where checkpoint files are stored
         """
-        path = f'weights/{run_id}-{episode}-{{}}.pth'
+        path = self._checkpoint_path(run_id, episode=episode, weights_dir=weights_dir)
         self.load_state_dict(torch.load(path.format('T')))

@@ -1,3 +1,7 @@
+import csv
+import json
+import os
+
 import wandb
 
 from argparse import ArgumentParser
@@ -12,6 +16,21 @@ from environments.crybaby import CryingBaby
 from agents.drqn import DRQN
 
 
+def save_rows(path, rows):
+    fieldnames = []
+    seen = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                fieldnames.append(key)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def main(args):
 
     # Initialize logging
@@ -21,6 +40,7 @@ def main(args):
         config=args,
         save_code=True)
     config = wandb.config
+    metrics_rows = []
 
     # Save all packages
     wandb.save('agents/*.py')
@@ -103,13 +123,17 @@ def main(args):
 
     # Load weights
     if config.load is not None:
-        agent.load(config.load, episode=config.load_at)
+        agent.load(config.load, episode=config.load_at, weights_dir=config.weights_dir)
+
+    def logger(payload):
+        wandb.log(payload)
+        metrics_rows.append(dict(payload))
 
     # Train agent
     agent.train(
         environment,
         wandb.run.id,
-        wandb.log,
+        logger,
         num_episodes=config.num_episodes,
         batch_size=config.batch_size,
         learning_rate=config.learning_rate,
@@ -119,7 +143,24 @@ def main(args):
         num_rollouts=config.num_rollouts,
         epsilon=config.epsilon,
         buffer_capacity=config.buffer_capacity,
+        weights_dir=config.weights_dir,
     )
+
+    if config.results_dir:
+        os.makedirs(config.results_dir, exist_ok=True)
+        run_info_path = os.path.join(config.results_dir, 'train_run_info.json')
+        with open(run_info_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                'run_id': wandb.run.id,
+                'run_name': wandb.run.name,
+                'weights_dir': config.weights_dir,
+                'results_dir': config.results_dir,
+                'args': vars(args),
+            }, f, indent=2)
+
+        if metrics_rows:
+            metrics_path = os.path.join(config.results_dir, f'train_metrics_{wandb.run.id}.csv')
+            save_rows(metrics_path, metrics_rows)
 
 
 if __name__ == '__main__':
@@ -137,6 +178,8 @@ if __name__ == '__main__':
     # Retrain
     parser.add_argument('--load', type=str, default=None)
     parser.add_argument('--load-at', type=int, default=None)
+    parser.add_argument('--weights-dir', dest='weights_dir', type=str, default='weights')
+    parser.add_argument('--results-dir', dest='results_dir', type=str, default=None)
 
     # Evaluation
     parser.add_argument('--eval-period', type=int, default=5)

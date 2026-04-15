@@ -309,7 +309,7 @@ def main(args):
     print(f"[agent] cell={train_args.cell} hidden_size={train_args.hidden_size} num_layers={train_args.num_layers}", flush=True)
 
     for ep in checkpoints:
-        agent.load(args.train_id, episode=ep)
+        agent.load(args.train_id, episode=ep, weights_dir=args.weights_dir)
         print(f"[loaded] train_id={args.train_id} episode={ep}", flush=True)
 
         transitions = sample_transitions(
@@ -376,6 +376,7 @@ if __name__ == "__main__":
     parser.add_argument("train_id", type=str)
 
     parser.add_argument("--report_dir", type=str, default="report")
+    parser.add_argument("--weights_dir", type=str, default="weights")
     parser.add_argument("--period", type=int, default=500)
     parser.add_argument("--end_episode", type=int, default=-1)
     parser.add_argument("--epsilon", type=float, default=0.0,
