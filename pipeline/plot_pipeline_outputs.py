@@ -75,6 +75,13 @@ def plot_csv_metrics(csv_path: Path, run_root: Path, output_root: Path) -> None:
         save_line_plot(df, x_col, y_col, out_path, title)
 
 
+def is_decoder_checkpoint_metrics(path: Path) -> bool:
+    if path.name != "metrics.csv":
+        return False
+    parts = path.parts
+    return "decoders" in parts and any(part.startswith("ep_") for part in parts)
+
+
 def plot_protocol_workbook(xlsx_path: Path, run_root: Path, output_root: Path) -> None:
     workbook = pd.ExcelFile(xlsx_path)
     if not workbook.sheet_names:
@@ -145,6 +152,10 @@ def plot_protocol_workbook(xlsx_path: Path, run_root: Path, output_root: Path) -
 
 
 def should_plot_csv(path: Path) -> bool:
+    if path.name == "decoder_episode_summary.csv":
+        return True
+    if is_decoder_checkpoint_metrics(path):
+        return False
     if path.name == "metrics.csv":
         return True
     if path.name.startswith("train_metrics_"):

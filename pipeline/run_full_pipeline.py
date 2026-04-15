@@ -1,4 +1,5 @@
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -76,6 +77,18 @@ def command_string(cmd):
     return " ".join(shlex.quote(part) for part in cmd)
 
 
+def build_subprocess_env(repo_root: Path):
+    env = os.environ.copy()
+    repo_root_str = str(repo_root)
+    existing = env.get("PYTHONPATH")
+    if existing:
+        if repo_root_str not in existing.split(os.pathsep):
+            env["PYTHONPATH"] = os.pathsep.join([repo_root_str, existing])
+    else:
+        env["PYTHONPATH"] = repo_root_str
+    return env
+
+
 def run_command(cmd, cwd: Path, log_path: Path, dry_run: bool = False) -> None:
     ensure_dir(log_path.parent)
     if dry_run:
@@ -86,6 +99,7 @@ def run_command(cmd, cwd: Path, log_path: Path, dry_run: bool = False) -> None:
     process = subprocess.Popen(
         cmd,
         cwd=str(cwd),
+        env=build_subprocess_env(cwd),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

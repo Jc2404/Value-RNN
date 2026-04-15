@@ -1,9 +1,17 @@
 import csv
 import os
+import sys
+from pathlib import Path
 from argparse import ArgumentParser
 
 import torch
 import wandb
+
+if __package__ is None or __package__ == "":
+    repo_root = Path(__file__).resolve().parents[1]
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
 
 from mine.mine import MutualInformationNeuralEstimator
 from utils import generate_hiddens_and_beliefs, get_run_statistic

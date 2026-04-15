@@ -118,7 +118,7 @@ def save_softmax_probe(path: str, state: Dict, in_dim: int, out_dim: int, use_ml
     torch.save(payload, path)
 
 
-def train_softmax_kl_with_logging(
+def train_softmax_kl_probe(
     Xtr: torch.Tensor,
     Ytr: torch.Tensor,
     Xva: torch.Tensor,
@@ -128,11 +128,11 @@ def train_softmax_kl_with_logging(
     part_idx: int,
     episode: int,
     device: torch.device,
-    logger,
 ) -> Dict:
     """
-    Same optimizer/criterion/shuffle structure as fit_belief_kl_probe in fix_decode_eval.py,
-    but logs per-epoch train/valid KL+CE to W&B.
+    Same optimizer/criterion/shuffle structure as fit_belief_kl_probe in
+    fix_decode_eval.py, but returns only the final train/valid metrics so the
+    pipeline can summarize one point per agent checkpoint.
     :contentReference[oaicite:1]{index=1}
     """
     N, H = Xtr.shape
@@ -153,9 +153,7 @@ def train_softmax_kl_with_logging(
 
     opt = torch.optim.Adam(probe.parameters(), lr=args.probe_lr)
 
-    # W&B: separate decoder-step axis, but also attach episode for easy filtering
-    # We'll log per epoch with a monotonically increasing integer:
-    # global_step = episode * probe_epochs + epoch
+    final_metrics = None
     for ep_i in range(args.probe_epochs):
         probe.train()
         perm = torch.randperm(N, device=device)
@@ -184,30 +182,23 @@ def train_softmax_kl_with_logging(
             kl_tr, ce_tr = eval_belief_kl_probe(Xtr, Ytr, state)
             kl_va, ce_va = eval_belief_kl_probe(Xva, Yva, state)
 
-        logger(
-            {
-                "epoch": ep_i,
-
-                # keep episode as metadata if you want
-                "checkpoint_episode": episode,
-
-                # Train vs eval on the same panels
-                f"softmax/KL_train_b{part_idx}": kl_tr,
-                f"softmax/KL_eval_b{part_idx}": kl_va,
-                f"softmax/CE_train_b{part_idx}": ce_tr,
-                f"softmax/CE_eval_b{part_idx}": ce_va,
-
-                # Optional: training objective
-                f"softmax/loss_train_{args.belief_loss}_b{part_idx}": running / max(seen, 1),
-            },
-            step=ep_i,
-        )
+        final_metrics = {
+            "agent_episode": episode,
+            "checkpoint_episode": episode,
+            "epoch": ep_i,
+            f"softmax/KL_train_b{part_idx}": kl_tr,
+            f"softmax/KL_eval_b{part_idx}": kl_va,
+            f"softmax/CE_train_b{part_idx}": ce_tr,
+            f"softmax/CE_eval_b{part_idx}": ce_va,
+            f"softmax/loss_train_{args.belief_loss}_b{part_idx}": running / max(seen, 1),
+        }
     return {
         "probe": probe,
         "mean": mean,
         "std": std,
         "standardize": args.probe_standardize,
         "train_loss": args.belief_loss,
+        "final_metrics": final_metrics,
     }
 
 
@@ -234,6 +225,8 @@ def main(args):
     if args.decoder_subdir is not None:
         root = os.path.join(root, args.decoder_subdir)
     ensure_dir(root)
+    summary_rows: List[Dict] = []
+    summary_path = os.path.join(root, "decoder_episode_summary.csv")
 
     for episode in range(0, args.end_episode + 1, args.period):
         # Load agent checkpoint (fresh instance per ep, same as fix_decode_eval main loop)
@@ -269,14 +262,10 @@ def main(args):
         ensure_dir(ep_dir)
 
         run_base_name = args.name if args.name is not None else "decoder_train"
-        metrics_rows: List[Dict] = []
-
-        def log_metrics(payload: Dict, step=None):
-            wandb.log(payload, step=step)
-            row = dict(payload)
-            if step is not None:
-                row["step"] = step
-            metrics_rows.append(row)
+        summary_row: Dict = {
+            "agent_episode": episode,
+            "checkpoint_episode": episode,
+        }
 
         wandb.init(
             project=args.wandb_project,
@@ -287,8 +276,6 @@ def main(args):
             reinit=True,
             save_code=True,
         )
-        wandb.define_metric("epoch")
-        wandb.define_metric("*", step_metric="epoch")
 
         # -------------------------
         # (1) Linear regression probes
@@ -306,17 +293,8 @@ def main(args):
                 r2_tr = eval_linreg_torch(Xtr, Ytr, probe)
                 r2_va = eval_linreg_torch(Xva, Yva, probe)
 
-                # Log at episode-level (use decoder/global_step = episode*probe_epochs)
-                for ep_i in range(args.probe_epochs):
-                    log_metrics(
-                        {
-                            "epoch": ep_i,
-                            "checkpoint_episode": episode,
-                            f"linreg/R2_train_b{part_idx}": r2_tr,
-                            f"linreg/R2_eval_b{part_idx}": r2_va,
-                        },
-                        step=ep_i,
-                    )
+                summary_row[f"linreg/R2_train_b{part_idx}"] = r2_tr
+                summary_row[f"linreg/R2_eval_b{part_idx}"] = r2_va
 
                 out_path = os.path.join(ep_dir, f"linreg_b{part_idx}.pth")
                 save_linreg_probe(out_path, probe)
@@ -326,14 +304,16 @@ def main(args):
         # -------------------------
         if args.run_softmax_belief:
             for part_idx, (Ytr, Yva) in enumerate(zip(Ytr_tuple, Yva_tuple)):
-                state = train_softmax_kl_with_logging(
+                state = train_softmax_kl_probe(
                     Xtr, Ytr, Xva, Yva,
                     args=args,
                     part_idx=part_idx,
                     episode=episode,
                     device=device,
-                    logger=log_metrics,
                 )
+                final_metrics = state.pop("final_metrics", None)
+                if final_metrics:
+                    summary_row.update(final_metrics)
 
                 # Save weights
                 out_path = os.path.join(ep_dir, f"{run_base_name}_softmax_b{part_idx}.pth")
@@ -345,9 +325,13 @@ def main(args):
                     use_mlp=bool(args.sm_use_mlp),
                 )
 
-        if metrics_rows:
-            metrics_path = os.path.join(ep_dir, "metrics.csv")
-            save_rows(metrics_path, metrics_rows)
+        wandb.log(summary_row)
+        wandb.summary.update(summary_row)
+
+        metrics_path = os.path.join(ep_dir, "metrics.csv")
+        save_rows(metrics_path, [summary_row])
+        summary_rows.append(summary_row)
+        save_rows(summary_path, summary_rows)
         print(f"[episode {episode}] saved decoders -> {ep_dir}", flush=True)
         wandb.finish()
 
