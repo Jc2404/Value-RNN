@@ -78,10 +78,6 @@
       {
         "label": "stochasticity",
         "flag": "--test_stochasticity"
-      },
-      {
-        "label": "length",
-        "flag": "--test_length"
       }
     ]
   },
