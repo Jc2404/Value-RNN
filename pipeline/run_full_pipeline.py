@@ -237,11 +237,15 @@ def main(args):
     if stage_enabled(decoder_cfg):
         decoder_name = decoder_cfg.get("name", "decoder_train")
         decoder_script = resolve_script_path(decoder_cfg.get("script", "train_decoder.py"), config_dir, repo_root)
+        decoder_results_dir = (results_dir / "decoder").resolve()
+        ensure_dir(decoder_results_dir)
         decoder_args = [
             decoder_name,
             train_id,
             "--weights_dir",
             str(weights_dir),
+            "--results_dir",
+            str(decoder_results_dir),
         ]
         decoder_subdir = decoder_cfg.get("decoder_subdir")
         if decoder_subdir:

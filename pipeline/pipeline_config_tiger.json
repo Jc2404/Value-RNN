@@ -1,9 +1,9 @@
 {
-  "run_name": "tmaze_1-length50_-stochasticity0.0",
+  "run_name": "tiger_1--p0.85",
   "output_root": "runs",
   "train": {
     "enabled": true,
-    "name": "tmaze_agent",
+    "name": "tiger_agent_p_0.85",
     "args": [
       "--eval-period", "5",
       "--num-rollouts", "50",
@@ -14,9 +14,8 @@
       "--target-period", "10",
       "--epsilon", "0.2",
       "--buffer-capacity", "8192",
-      "tmaze",
-      "--length", "50",
-      "--stochasticity", "0.0"
+      "tiger",
+      "--listen-accuracy", "0.85"
     ]
   },
   "decoder_train": {
@@ -25,13 +24,14 @@
     "args": [
       "--run_regression",
       "--run_softmax_belief",
-      "--period", "100",
+      "--period", "250",
       "--end_episode", "4000",
       "--probe_num_samples", "10000",
       "--probe_valid_size", "0.2",
       "--probe_epochs", "300",
       "--probe_lr", "0.001",
       "--probe_batch_size", "1024",
+      "--sm_use_mlp",
       "--belief_loss", "kl"
     ]
   },
@@ -42,7 +42,7 @@
     "args": [
       "--agent_episode_start", "0",
       "--agent_episode_end", "4000",
-      "--agent_episode_step", "100",
+      "--agent_episode_step", "250",
       "--mine_num_samples", "10000",
       "--mine_num_layers", "2",
       "--mine_hidden_size", "256",
@@ -76,8 +76,12 @@
     ],
     "tests": [
       {
-        "label": "stochasticity",
-        "flag": "--test_stochasticity"
+        "label": "listen_accuracy",
+        "flag": "--test_listen_accuracy"
+      },
+      {
+        "label": "reward_listen",
+        "flag": "--test_reward_listen"
       }
     ]
   },
@@ -101,8 +105,8 @@
     ],
     "tests": [
       {
-        "label": "stochasticity",
-        "flag": "--test_stochasticity"
+        "label": "listen_accuracy",
+        "flag": "--test_listen_accuracy"
       },
       {
         "label": "reward_listen",

@@ -35,7 +35,13 @@ def main(args):
     if not output_dir.is_absolute():
         output_dir = (repo_root / output_dir).resolve()
 
-    plot_main(Namespace(run_root=str(run_root), output_dir=str(output_dir)))
+    plot_main(
+        Namespace(
+            run_root=str(run_root),
+            output_dir=str(output_dir),
+            protocol_a_base_value=args.protocol_a_base_value,
+        )
+    )
     print(f"Generated plots in: {output_dir}", flush=True)
 
 
@@ -45,5 +51,6 @@ if __name__ == "__main__":
     parser.add_argument("--repo-root", type=str, default=None)
     parser.add_argument("--runs-root", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument("--protocol-a-base-value", type=float, default=None)
     args = parser.parse_args()
     main(args)

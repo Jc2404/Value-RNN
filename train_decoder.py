@@ -225,8 +225,20 @@ def main(args):
     if args.decoder_subdir is not None:
         root = os.path.join(root, args.decoder_subdir)
     ensure_dir(root)
+
+    results_root = None
+    if args.results_dir is not None:
+        results_root = os.path.join(args.results_dir, "decoders", args.train_id)
+        if args.decoder_subdir is not None:
+            results_root = os.path.join(results_root, args.decoder_subdir)
+        ensure_dir(results_root)
+
     summary_rows: List[Dict] = []
     summary_path = os.path.join(root, "decoder_episode_summary.csv")
+    results_summary_path = (
+        os.path.join(results_root, "decoder_episode_summary.csv")
+        if results_root is not None else None
+    )
 
     for episode in range(0, args.end_episode + 1, args.period):
         # Load agent checkpoint (fresh instance per ep, same as fix_decode_eval main loop)
@@ -260,6 +272,10 @@ def main(args):
         # Per-episode output dir
         ep_dir = os.path.join(root, f"ep_{episode}")
         ensure_dir(ep_dir)
+        results_ep_dir = None
+        if results_root is not None:
+            results_ep_dir = os.path.join(results_root, f"ep_{episode}")
+            ensure_dir(results_ep_dir)
 
         run_base_name = args.name if args.name is not None else "decoder_train"
         summary_row: Dict = {
@@ -330,8 +346,13 @@ def main(args):
 
         metrics_path = os.path.join(ep_dir, "metrics.csv")
         save_rows(metrics_path, [summary_row])
+        if results_ep_dir is not None:
+            results_metrics_path = os.path.join(results_ep_dir, "metrics.csv")
+            save_rows(results_metrics_path, [summary_row])
         summary_rows.append(summary_row)
         save_rows(summary_path, summary_rows)
+        if results_summary_path is not None:
+            save_rows(results_summary_path, summary_rows)
         print(f"[episode {episode}] saved decoders -> {ep_dir}", flush=True)
         wandb.finish()
 
@@ -348,6 +369,8 @@ if __name__ == "__main__":
     # W&B / outputs
     parser.add_argument("--wandb_project", type=str, default="decoder-train")
     parser.add_argument("--weights_dir", type=str, default="weights")
+    parser.add_argument("--results_dir", type=str, default=None,
+                        help="Optional directory for decoder metrics/summary CSV files.")
     parser.add_argument("--decoder_subdir", type=str, default=None,
                         help="Optional extra subdirectory under weights/decoders/<train_id>/ for this decoder run.")
 
