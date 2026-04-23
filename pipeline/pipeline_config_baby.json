@@ -14,8 +14,7 @@
       "--target-period", "10",
       "--epsilon", "0.2",
       "--buffer-capacity", "8192",
-      "crybaby",
-      "--listen-accuracy", "0.9"
+      "crybaby"
     ]
   },
   "decoder_train": {
