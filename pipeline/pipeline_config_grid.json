@@ -1,9 +1,9 @@
 {
-  "run_name": "tmaze_1-length50_-stochasticity0.0",
+  "run_name": "Grid_1-p0.7-w10",
   "output_root": "runs",
   "train": {
     "enabled": true,
-    "name": "tmaze_agent",
+    "name": "Grid_1-agent-p0.7-w10",
     "args": [
       "--eval-period", "5",
       "--num-rollouts", "50",
@@ -14,9 +14,11 @@
       "--target-period", "10",
       "--epsilon", "0.2",
       "--buffer-capacity", "8192",
-      "tmaze",
-      "--length", "50",
-      "--stochasticity", "0.0"
+      "gridworld",
+      "--size", "10",
+      "--tprob", "0.7",
+      "--reward-scheme", "symmetric",
+      "--reward-margin", "2"
     ]
   },
   "decoder_train": {
@@ -25,13 +27,14 @@
     "args": [
       "--run_regression",
       "--run_softmax_belief",
-      "--period", "100",
+      "--period", "250",
       "--end_episode", "4000",
       "--probe_num_samples", "10000",
       "--probe_valid_size", "0.2",
       "--probe_epochs", "300",
       "--probe_lr", "0.001",
       "--probe_batch_size", "1024",
+      "--sm_use_mlp",
       "--belief_loss", "kl"
     ]
   },
@@ -42,12 +45,12 @@
     "args": [
       "--agent_episode_start", "0",
       "--agent_episode_end", "4000",
-      "--agent_episode_step", "100",
+      "--agent_episode_step", "250",
       "--mine_num_samples", "10000",
       "--mine_num_layers", "2",
       "--mine_hidden_size", "256",
       "--mine_alpha", "0.01",
-      "--mine_num_epochs", "200",
+      "--mine_num_epochs", "400",
       "--mine_batch_size", "1024",
       "--mine_learning_rate", "0.001",
       "--valid_size", "0.2",
@@ -76,8 +79,12 @@
     ],
     "tests": [
       {
-        "label": "stochasticity",
-        "flag": "--test_stochasticity"
+        "label": "reward_scheme",
+        "flag": "--test_reward_scheme"
+      },
+      {
+        "label": "reward_margin",
+        "flag": "--test_reward_margin"
       }
     ]
   },
@@ -101,12 +108,16 @@
     ],
     "tests": [
       {
-        "label": "stochasticity",
-        "flag": "--test_stochasticity"
+        "label": "test_grid_size",
+        "flag": "--test_grid_size"
       },
       {
-        "label": "length",
-        "flag": "--test_length"
+        "label": "reward_scheme",
+        "flag": "--test_reward_scheme"
+      },
+      {
+        "label": "reward_margin",
+        "flag": "--test_reward_margin"
       }
     ]
   },

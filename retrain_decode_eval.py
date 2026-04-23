@@ -67,7 +67,10 @@ def parse_variant(vname: str):
     if vname == "base":
         return "base", None
     k, v = vname.split("=")
-    return k, float(v)
+    try:
+        return k, float(v)
+    except ValueError:
+        return k, v
 
 
 def build_environment(train_args, overrides=None):
@@ -159,7 +162,7 @@ def pick_variants(train_args, args):
 
     if env_name == "starkweather":
         if args.test_p_omission:
-            for p in [0.0, 0.05, 0.08, 0.1, 0.12, 0.15, 0.2]:
+            for p in [0.0, 0.05, 0.1, 0.15, 0.2, 0.25]:
                 variants.append((f"starkweather_p_omission={p}", {"p_omission": p}))
             return variants
         if args.test_bin_size:
@@ -203,6 +206,14 @@ def pick_variants(train_args, args):
         if args.test_tprob:
             for p in [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
                 variants.append((f"tprob={p}", {"tprob": p}))
+            return variants
+        if args.test_reward_scheme:
+            for s in ["symmetric", "center", "scaled"]:
+                variants.append((f"reward_scheme={s}", {"reward_scheme": s}))
+            return variants
+        if args.test_reward_margin:
+            for m in [0, 1, 2, 3, 4]:
+                variants.append((f"reward_margin={m}", {"reward_margin": m}))
             return variants
         
     if env_name == "crybaby":
@@ -832,6 +843,8 @@ if __name__ == "__main__":
     # GridWorld
     parser.add_argument("--test_grid_size", action="store_true")
     parser.add_argument("--test_tprob", action="store_true")
+    parser.add_argument("--test_reward_scheme", action="store_true")
+    parser.add_argument("--test_reward_margin", action="store_true")
     # CryBaby
     parser.add_argument("--test_p_cry_if_hungry", action="store_true")
     parser.add_argument("--test_p_cry_if_full", action="store_true")

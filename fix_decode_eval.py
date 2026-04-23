@@ -36,7 +36,10 @@ def select_device():
 
 def parse_variant(vname: str):
     k, v = vname.split("=")
-    return k, float(v)
+    try:
+        return k, float(v)
+    except ValueError:
+        return k, v
 
 
 def build_environment(train_args, overrides=None):
@@ -115,7 +118,7 @@ def pick_variants(train_args, args):
 
     elif env_name == "starkweather":
         if args.test_p_omission:
-            grid = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
+            grid = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25]
             return [(f"starkweather_p_omission={p}", {"p_omission": p}) for p in grid]
         if args.test_bin_size:
             grid = [train_args.bin_size, max(1, train_args.bin_size // 2), train_args.bin_size * 2]
@@ -147,6 +150,12 @@ def pick_variants(train_args, args):
         if args.test_tprob:
             grid = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
             return [(f"gridworld_tprob={p}", {"tprob": p}) for p in grid]
+        if args.test_reward_scheme:
+            grid = ["symmetric", "center", "scaled"]
+            return [(f"gridworld_reward_scheme={s}", {"reward_scheme": s}) for s in grid]
+        if args.test_reward_margin:
+            grid = [0, 1, 2, 3, 4]
+            return [(f"gridworld_reward_margin={m}", {"reward_margin": m}) for m in grid]
     
     elif env_name == "crybaby":
         if args.test_p_cry_if_hungry:
@@ -743,6 +752,8 @@ if __name__ == "__main__":
     parser.add_argument("--test_listen_accuracy", action="store_true")
     parser.add_argument("--test_reward_listen", action="store_true")
     parser.add_argument("--test_tprob", action="store_true")
+    parser.add_argument("--test_reward_scheme", action="store_true")
+    parser.add_argument("--test_reward_margin", action="store_true")
     parser.add_argument("--test_p_cry_if_hungry", action="store_true")
     parser.add_argument("--test_p_cry_if_full", action="store_true")
 
