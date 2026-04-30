@@ -301,7 +301,28 @@ def belief_probe_loss(log_probs, targets, loss_type="kl"):
     raise ValueError(f"Unknown belief loss: {loss_type}")
 
 
-def fit_belief_kl_probe(X_train, Y_train, args):
+def resolve_softmax_probe_specs(args):
+    specs = []
+    explicit = False
+
+    if getattr(args, "run_softmax_linear_probe", False):
+        specs.append({"name": "linear", "use_mlp": False, "legacy_names": False})
+        explicit = True
+    if getattr(args, "run_softmax_mlp_probe", False):
+        specs.append({"name": "mlp", "use_mlp": True, "legacy_names": False})
+        explicit = True
+
+    if not explicit and args.run_softmax_belief:
+        specs.append({
+            "name": "mlp" if args.use_mlp_probe else "linear",
+            "use_mlp": args.use_mlp_probe,
+            "legacy_names": True,
+        })
+
+    return specs
+
+
+def fit_belief_kl_probe(X_train, Y_train, args, *, use_mlp_probe=False):
     """
     Train once on base; freeze; eval elsewhere.
     """
@@ -318,7 +339,7 @@ def fit_belief_kl_probe(X_train, Y_train, args):
         Xn = X_train
 
     probe = (MLPProbe(H, K, add_bias=True).to(device)
-             if args.use_mlp_probe else SoftmaxProbe(H, K, add_bias=True).to(device))
+             if use_mlp_probe else SoftmaxProbe(H, K, add_bias=True).to(device))
 
     opt = torch.optim.Adam(probe.parameters(), lr=args.probe_lr)
 
@@ -488,10 +509,12 @@ def main(args):
         episode_rows[episode] = []
 
         base_h_belief = base_beliefs = None
-        if args.run_mi or args.run_regression or args.run_softmax_belief:
+        softmax_specs = resolve_softmax_probe_specs(args)
+
+        if args.run_mi or args.run_regression or softmax_specs:
             h, b = generate_hiddens_and_beliefs(
                 agent, base_env,
-                num_samples=args.probe_num_samples if (args.run_regression or args.run_softmax_belief) else args.mine_num_samples,
+                num_samples=args.probe_num_samples if (args.run_regression or softmax_specs) else args.mine_num_samples,
                 epsilon=args.epsilon,
                 approximate=args.approximate,
             )
@@ -575,19 +598,37 @@ def main(args):
         kl_probes = None
         kl_base = {}
         ce_base = {}
-        if args.run_softmax_belief:
+        if softmax_specs:
             Xtr, Xte, Btr, Bte = shuffle_split_torch(
                 base_h_belief, base_beliefs, args.probe_valid_size, device
             )
-            kl_probes = []
-            for part_idx, (Ytr, Yte) in enumerate(zip(Btr, Bte)):
-                st = fit_belief_kl_probe(Xtr, Ytr, args)
-                kl, ce = eval_belief_kl_probe(Xte, Yte, st)
-                kl_base[f"KL_b{part_idx}"] = kl
-                ce_base[f"CE_b{part_idx}"] = ce
-                kl_probes.append(st)
-            wandb.log({"train/episode": episode, **{f"belief_softmax/base_KL_b{i}": kl_base[f'KL_b{i}'] for i in range(len(kl_probes))},
-                       **{f"belief_softmax/base_CE_b{i}": ce_base[f'CE_b{i}'] for i in range(len(kl_probes))}}, step=episode)
+            kl_probes = {}
+            softmax_log = {"train/episode": episode}
+            for spec in softmax_specs:
+                probes_for_spec = []
+                spec_name = spec["name"]
+                for part_idx, (Ytr, Yte) in enumerate(zip(Btr, Bte)):
+                    st = fit_belief_kl_probe(Xtr, Ytr, args, use_mlp_probe=spec["use_mlp"])
+                    kl, ce = eval_belief_kl_probe(Xte, Yte, st)
+
+                    if spec["legacy_names"]:
+                        kl_key = f"KL_b{part_idx}"
+                        ce_key = f"CE_b{part_idx}"
+                        log_kl_key = f"belief_softmax/base_KL_b{part_idx}"
+                        log_ce_key = f"belief_softmax/base_CE_b{part_idx}"
+                    else:
+                        kl_key = f"KL_{spec_name}_b{part_idx}"
+                        ce_key = f"CE_{spec_name}_b{part_idx}"
+                        log_kl_key = f"belief_softmax/{spec_name}/base_KL_b{part_idx}"
+                        log_ce_key = f"belief_softmax/{spec_name}/base_CE_b{part_idx}"
+
+                    kl_base[kl_key] = kl
+                    ce_base[ce_key] = ce
+                    softmax_log[log_kl_key] = kl
+                    softmax_log[log_ce_key] = ce
+                    probes_for_spec.append(st)
+                kl_probes[spec_name] = probes_for_spec
+            wandb.log(softmax_log, step=episode)
 
         # State decoder
         state_mdl = None
@@ -621,7 +662,7 @@ def main(args):
             base_row["MI"] = mi_base
         if args.run_regression:
             base_row.update(reg_base)
-        if args.run_softmax_belief:
+        if softmax_specs:
             base_row.update(kl_base)
             base_row.update(ce_base)
         if args.run_state_decoder:
@@ -672,7 +713,7 @@ def main(args):
                                f"regression/frozen_base_R2_b{part_idx}__{vname}": r2}, step=episode)
 
             # Belief KL
-            if args.run_softmax_belief:
+            if softmax_specs:
                 hv, bv = generate_hiddens_and_beliefs(
                     agent, venv,
                     num_samples=args.probe_num_samples,
@@ -682,13 +723,25 @@ def main(args):
                 hv = hv.to(device)
                 bv = tuple(bb.to(device) for bb in bv)
 
-                for part_idx, (bp, st) in enumerate(zip(bv, kl_probes)):
-                    kl, ce = eval_belief_kl_probe(hv, bp, st)
-                    row[f"KL_b{part_idx}"] = kl
-                    row[f"CE_b{part_idx}"] = ce
-                    wandb.log({"train/episode": episode,
-                               f"belief_softmax/frozen_base_KL_b{part_idx}__{vname}": kl,
-                               f"belief_softmax/frozen_base_CE_b{part_idx}__{vname}": ce}, step=episode)
+                softmax_log = {"train/episode": episode}
+                for spec in softmax_specs:
+                    spec_name = spec["name"]
+                    for part_idx, (bp, st) in enumerate(zip(bv, kl_probes[spec_name])):
+                        kl, ce = eval_belief_kl_probe(hv, bp, st)
+                        if spec["legacy_names"]:
+                            row[f"KL_b{part_idx}"] = kl
+                            row[f"CE_b{part_idx}"] = ce
+                            log_kl_key = f"belief_softmax/frozen_base_KL_b{part_idx}__{vname}"
+                            log_ce_key = f"belief_softmax/frozen_base_CE_b{part_idx}__{vname}"
+                        else:
+                            row[f"KL_{spec_name}_b{part_idx}"] = kl
+                            row[f"CE_{spec_name}_b{part_idx}"] = ce
+                            log_kl_key = f"belief_softmax/{spec_name}/frozen_base_KL_b{part_idx}__{vname}"
+                            log_ce_key = f"belief_softmax/{spec_name}/frozen_base_CE_b{part_idx}__{vname}"
+
+                        softmax_log[log_kl_key] = kl
+                        softmax_log[log_ce_key] = ce
+                wandb.log(softmax_log, step=episode)
 
             # State decoder
             if args.run_state_decoder:
@@ -777,6 +830,10 @@ if __name__ == "__main__":
                         help="Disable float64 in least squares (float32 only).")
 
     # ---- belief KL probe
+    parser.add_argument("--run_softmax_linear_probe", action="store_true",
+                        help="Run the 1-layer linear softmax belief probe.")
+    parser.add_argument("--run_softmax_mlp_probe", action="store_true",
+                        help="Run the MLP softmax belief probe.")
     parser.add_argument("--use_mlp_probe", action="store_true",
                         help="If set, use MLP probe instead of linear for belief KL.")
     parser.add_argument("--belief_loss", choices=["kl", "mse"], default="kl",
@@ -802,9 +859,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if not (args.run_mi or args.run_regression or args.run_softmax_belief or args.run_state_decoder):
+    softmax_specs = resolve_softmax_probe_specs(args)
+
+    if not (args.run_mi or args.run_regression or softmax_specs or args.run_state_decoder):
         raise RuntimeError("No analyses enabled. Add at least one flag: "
-                           "--run_mi / --run_regression / --run_softmax_belief / --run_state_decoder")
+                           "--run_mi / --run_regression / --run_softmax_belief "
+                           "/ --run_softmax_linear_probe / --run_softmax_mlp_probe / --run_state_decoder")
 
     print("\n".join(f"{k}={v}" for k, v in vars(args).items()), flush=True)
     main(args)

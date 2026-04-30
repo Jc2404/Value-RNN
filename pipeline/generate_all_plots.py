@@ -40,6 +40,7 @@ def main(args):
             run_root=str(run_root),
             output_dir=str(output_dir),
             protocol_a_base_value=args.protocol_a_base_value,
+            train_x_axis=args.train_x_axis,
         )
     )
     print(f"Generated plots in: {output_dir}", flush=True)
@@ -52,5 +53,6 @@ if __name__ == "__main__":
     parser.add_argument("--runs-root", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--protocol-a-base-value", type=float, default=None)
+    parser.add_argument("--train-x-axis", choices=["episode", "steps"], default="episode")
     args = parser.parse_args()
     main(args)

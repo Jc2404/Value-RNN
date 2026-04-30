@@ -23,6 +23,8 @@
 #   - For state decoder: the "label" is discrete states (ints 0..K-1). If yours are not,
 #     you MUST map them before training (you can do it in generate_hiddens_and_states).
 
+import csv
+import json
 import os
 import wandb
 import torch
@@ -31,6 +33,10 @@ import torch.nn.functional as F
 import pandas as pd
 from argparse import ArgumentParser
 
+from belief_comparison import (
+    assert_planner_supported_environment,
+    evaluate_agent_against_belief,
+)
 from environments.tmaze import TMaze
 from environments.hike import MountainHike
 from environments.irrelevant import Irrelevant
@@ -257,6 +263,26 @@ def shuffle_split_tensors(X, Ys, valid_size, device):
     return X_tr, X_te, Ys_tr, Ys_te
 
 
+def save_csv(path, rows):
+    if not rows:
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            f.write("")
+        return
+
+    fieldnames = []
+    seen = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                fieldnames.append(key)
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 # -----------------------------
 # (1) MINE MI
 # -----------------------------
@@ -403,7 +429,28 @@ def softmax_probe_loss(log_probs, targets, loss_type="kl"):
     raise ValueError(f"Unknown belief loss: {loss_type}")
 
 
-def fit_softmax_probe_torch(X, Y, args):
+def resolve_softmax_probe_specs(args):
+    specs = []
+    explicit = False
+
+    if getattr(args, "run_softmax_linear_probe", False):
+        specs.append({"name": "linear", "use_mlp": False, "legacy_names": False})
+        explicit = True
+    if getattr(args, "run_softmax_mlp_probe", False):
+        specs.append({"name": "mlp", "use_mlp": True, "legacy_names": False})
+        explicit = True
+
+    if not explicit and args.run_softmax_belief:
+        specs.append({
+            "name": "mlp" if args.use_mlp_probe else "linear",
+            "use_mlp": args.use_mlp_probe,
+            "legacy_names": True,
+        })
+
+    return specs
+
+
+def fit_softmax_probe_torch(X, Y, args, *, use_mlp_probe=False):
     """
     Fits per belief-part probe on (X,Y) with KLDivLoss.
     """
@@ -419,7 +466,7 @@ def fit_softmax_probe_torch(X, Y, args):
         mean, std = None, None
         Xn = X
 
-    if args.use_mlp_probe:
+    if use_mlp_probe:
         probe = MLPProbe(H, K, hidden_dim=args.mlp_hidden_dim, dropout=args.mlp_dropout).to(device)
     else:
         probe = SoftmaxProbe(H, K).to(device)
@@ -594,9 +641,14 @@ def main(args):
     print("Device:", device)
 
     variants = pick_variants(train_args, args)
+    if not variants:
+        variants = [("base", {})]
+    softmax_specs = resolve_softmax_probe_specs(args)
 
     # Build env0 to get action/obs sizes consistent
     env0 = build_environment(train_args, overrides=variants[0][1])
+    if args.run_belief_eval:
+        assert_planner_supported_environment(env0)
 
     # W&B init
     cfg = vars(train_args) | vars(args)
@@ -617,6 +669,9 @@ def main(args):
     os.makedirs(args.report_dir, exist_ok=True)
     excel_path = os.path.join(args.report_dir, f"protocolB_{args.name}_{args.train_id}.xlsx")
     episode_rows = {}
+    belief_summary_rows = []
+    belief_per_episode_rows = []
+    belief_per_step_rows = []
 
     # agent
     agent = DRQN(
@@ -628,8 +683,19 @@ def main(args):
     )
 
     # If nothing enabled, fail fast (common user mistake)
-    if not (args.run_mi or args.run_regression or args.run_softmax_belief or args.run_state_decoder):
-        raise ValueError("No decoders enabled. Use at least one of: --run_mi --run_linreg --run_softmax --run_state")
+    if not (
+        args.run_mi
+        or args.run_regression
+        or softmax_specs
+        or args.run_state_decoder
+        or args.run_belief_eval
+    ):
+        raise ValueError(
+            "No evaluations enabled. Use at least one of: "
+            "--run_mi --run_regression --run_softmax_belief "
+            "--run_softmax_linear_probe --run_softmax_mlp_probe "
+            "--run_state_decoder --run_belief_eval"
+        )
 
     if args.end_episode < 0 or args.end_episode > train_args.episodes:
         args.end_episode = train_args.episodes
@@ -654,7 +720,8 @@ def main(args):
                     "value": float(value) if value is not None else float("nan"),
                 })
 
-            if args.run_mi or args.run_regression or args.run_softmax_belief:
+            run_softmax = bool(softmax_specs)
+            if args.run_mi or args.run_regression or run_softmax:
                 # Train sample
                 h_tr, b_tr = generate_hiddens_and_beliefs(
                     agent, venv,
@@ -677,7 +744,7 @@ def main(args):
                 else:
                     h_ev, b_ev = h_tr, b_tr
 
-                if args.run_regression or args.run_softmax_belief:
+                if args.run_regression or run_softmax:
                     Xtr, Xte, Btr, Bte = shuffle_split_tensors(h_tr, b_tr, args.valid_size, device)
 
                 # ---------------- MI ----------------
@@ -728,22 +795,40 @@ def main(args):
                         add_row(f"linreg_rsq-{part_idx}", rsq_te)
 
                 # ---------------- Softmax belief probe ----------------
-                if args.run_softmax_belief:
-                    for part_idx, (Ytr, Yte) in enumerate(zip(Btr, Bte)):
-                        sm_state = fit_softmax_probe_torch(Xtr, Ytr, args)
-                        res_te = eval_softmax_probe_torch(Xte, Yte, sm_state, standardize=args.standardize)
-                        res_tr = eval_softmax_probe_torch(Xtr, Ytr, sm_state, standardize=args.standardize)
+                if run_softmax:
+                    softmax_log = {
+                        "train/episode": episode,
+                        "task/variant": vname,
+                    }
+                    for spec in softmax_specs:
+                        spec_name = spec["name"]
+                        for part_idx, (Ytr, Yte) in enumerate(zip(Btr, Bte)):
+                            sm_state = fit_softmax_probe_torch(Xtr, Ytr, args, use_mlp_probe=spec["use_mlp"])
+                            res_te = eval_softmax_probe_torch(Xte, Yte, sm_state, standardize=args.standardize)
+                            res_tr = eval_softmax_probe_torch(Xtr, Ytr, sm_state, standardize=args.standardize)
 
-                        wandb.log({
-                            "train/episode": episode,
-                            "task/variant": vname,
-                            f"softmax/kl-{part_idx}": res_te["kl"],
-                            f"softmax/ce-{part_idx}": res_te["ce"],
-                            f"softmax/kl_train-{part_idx}": res_tr["kl"],
-                            f"softmax/ce_train-{part_idx}": res_tr["ce"],
-                        })
-                        add_row(f"softmax_kl-{part_idx}", res_te["kl"])
-                        add_row(f"softmax_ce-{part_idx}", res_te["ce"])
+                            if spec["legacy_names"]:
+                                log_kl = f"softmax/kl-{part_idx}"
+                                log_ce = f"softmax/ce-{part_idx}"
+                                log_kl_tr = f"softmax/kl_train-{part_idx}"
+                                log_ce_tr = f"softmax/ce_train-{part_idx}"
+                                row_kl = f"softmax_kl-{part_idx}"
+                                row_ce = f"softmax_ce-{part_idx}"
+                            else:
+                                log_kl = f"softmax/{spec_name}/kl-{part_idx}"
+                                log_ce = f"softmax/{spec_name}/ce-{part_idx}"
+                                log_kl_tr = f"softmax/{spec_name}/kl_train-{part_idx}"
+                                log_ce_tr = f"softmax/{spec_name}/ce_train-{part_idx}"
+                                row_kl = f"softmax_{spec_name}_kl-{part_idx}"
+                                row_ce = f"softmax_{spec_name}_ce-{part_idx}"
+
+                            softmax_log[log_kl] = res_te["kl"]
+                            softmax_log[log_ce] = res_te["ce"]
+                            softmax_log[log_kl_tr] = res_tr["kl"]
+                            softmax_log[log_ce_tr] = res_tr["ce"]
+                            add_row(row_kl, res_te["kl"])
+                            add_row(row_ce, res_te["ce"])
+                    wandb.log(softmax_log)
 
             # ---------------- State decoder
             if args.run_state_decoder:
@@ -784,6 +869,61 @@ def main(args):
                 add_row("state_LL", res_te["LL"])
                 add_row("state_pcor", res_te["pcor"])
 
+            if args.run_belief_eval:
+                env_factory = lambda overrides=overrides: build_environment(train_args, overrides=overrides)
+                belief_summary, belief_per_episode, belief_per_step = evaluate_agent_against_belief(
+                    agent,
+                    env_factory,
+                    args.belief_total_steps,
+                    epsilon=args.belief_eval_epsilon,
+                    planning_horizon=args.belief_planning_horizon,
+                    belief_round_ndigits=args.belief_round_ndigits,
+                )
+
+                belief_summary.update({
+                    "run_id": args.train_id,
+                    "agent_episode": int(episode),
+                    "environment": train_args.environment,
+                    "variant": vname,
+                    "task_name": task_name,
+                    "task_value": task_value,
+                })
+                belief_summary_rows.append(belief_summary)
+
+                workbook_metrics = {}
+                for key, value in belief_summary.items():
+                    if key.startswith("metric_") or key.startswith("comparison_"):
+                        add_row(key, value)
+                        workbook_metrics[f"belief_eval/{key}"] = value
+
+                wandb.log({
+                    "train/episode": episode,
+                    "task/variant": vname,
+                    **workbook_metrics,
+                })
+
+                for row in belief_per_episode:
+                    row.update({
+                        "run_id": args.train_id,
+                        "agent_episode": int(episode),
+                        "environment": train_args.environment,
+                        "variant": vname,
+                        "task_name": task_name,
+                        "task_value": task_value,
+                    })
+                    belief_per_episode_rows.append(row)
+
+                for row in belief_per_step:
+                    row.update({
+                        "run_id": args.train_id,
+                        "agent_episode": int(episode),
+                        "environment": train_args.environment,
+                        "variant": vname,
+                        "task_name": task_name,
+                        "task_value": task_value,
+                    })
+                    belief_per_step_rows.append(row)
+
     with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
         for ep, rows in episode_rows.items():
             df = pd.DataFrame(rows)
@@ -803,6 +943,25 @@ def main(args):
             wide.to_excel(writer, sheet_name=sheet_name[:31], index=False)
 
     print(f"Saved Excel: {excel_path}", flush=True)
+
+    if args.run_belief_eval:
+        belief_prefix = f"protocolB_{args.name}_{args.train_id}_belief_eval"
+        belief_summary_json_path = os.path.join(args.report_dir, f"{belief_prefix}_all_summaries.json")
+        belief_summary_csv_path = os.path.join(args.report_dir, f"{belief_prefix}_summary_table.csv")
+        belief_per_episode_path = os.path.join(args.report_dir, f"{belief_prefix}_per_episode.csv")
+        belief_per_step_path = os.path.join(args.report_dir, f"{belief_prefix}_per_step.csv")
+
+        with open(belief_summary_json_path, "w", encoding="utf-8") as f:
+            json.dump(belief_summary_rows, f, indent=2)
+        save_csv(belief_summary_csv_path, belief_summary_rows)
+        save_csv(belief_per_episode_path, belief_per_episode_rows)
+        save_csv(belief_per_step_path, belief_per_step_rows)
+
+        print(f"Saved belief summaries: {belief_summary_json_path}", flush=True)
+        print(f"Saved belief summary table: {belief_summary_csv_path}", flush=True)
+        print(f"Saved belief per-episode metrics: {belief_per_episode_path}", flush=True)
+        print(f"Saved belief per-step metrics: {belief_per_step_path}", flush=True)
+
     wandb.finish()
 
 
@@ -854,6 +1013,14 @@ if __name__ == "__main__":
     parser.add_argument("--run_regression", action="store_true")
     parser.add_argument("--run_softmax_belief", action="store_true")
     parser.add_argument("--run_state_decoder", action="store_true")
+    parser.add_argument("--run_belief_eval", action="store_true",
+                        help="Also compare each tested variant against the belief planner and save JSON/CSV summaries.")
+
+    # belief planner comparison
+    parser.add_argument("--belief_total_steps", type=int, default=5000)
+    parser.add_argument("--belief_eval_epsilon", type=float, default=0.0)
+    parser.add_argument("--belief_planning_horizon", type=int, default=None)
+    parser.add_argument("--belief_round_ndigits", type=int, default=10)
 
     # shared probe hyperparams (used by softmax + state; linreg uses closed form)
     parser.add_argument("--probe_epochs", type=int, default=300)
@@ -870,6 +1037,10 @@ if __name__ == "__main__":
                         help="Disable float64 in linreg (use float32 only).")
 
     # softmax probe architecture
+    parser.add_argument("--run_softmax_linear_probe", action="store_true",
+                        help="Run the 1-layer linear softmax belief probe.")
+    parser.add_argument("--run_softmax_mlp_probe", action="store_true",
+                        help="Run the MLP softmax belief probe.")
     parser.add_argument("--use_mlp_probe", action="store_true")
     parser.add_argument("--mlp_hidden_dim", type=int, default=128)
     parser.add_argument("--mlp_dropout", type=float, default=0.0)

@@ -15,6 +15,7 @@ class BeliefPolicy:
       - CryingBaby
       - TMaze
       - StarkweatherEnv
+      - GridWorld
 
       - eval(environment, num_rollouts)
       - play(environment, epsilon=0.0, return_beliefs=False)
@@ -76,7 +77,7 @@ class BeliefPolicy:
         if remaining_steps is None:
             remaining_steps = self._planning_horizon(environment)
 
-        belief = environment.get_belief()[0].detach().clone().float()
+        belief = self.extract_planning_belief(environment)
         q_values = self.q_values(environment, belief, remaining_steps)
         return int(torch.argmax(q_values).item())
 
@@ -131,6 +132,7 @@ class BeliefPolicy:
 
     # Environment-specifics, will incorporate into environment classes
     def _branches(self, environment, belief, action):
+        environment = self._base_environment(environment)
         name = environment.__class__.__name__.lower()
         if name == "tiger":
             return self._tiger(environment, belief, action)
@@ -140,6 +142,8 @@ class BeliefPolicy:
             return self._tmaze(environment, belief, action)
         if name == "starkweatherenv":
             return self._stark(environment, belief, action)
+        if name == "gridworld":
+            return self._gridworld(environment, belief, action)
         raise NotImplementedError(
             f"Does not support {environment.__class__.__name__} yet"
         )
@@ -258,6 +262,51 @@ class BeliefPolicy:
 
         return branches
 
+    def _gridworld(self, env, belief, action):
+        b = self._normalize(belief)
+        pred = torch.zeros_like(b)
+
+        for i, b_i in enumerate(b):
+            if float(b_i.item()) <= 0.0:
+                continue
+            idxs, probs = env._transitions[action][i]
+            pred[idxs] += b_i * probs
+
+        grouped = {}
+        for j, mass_t in enumerate(pred):
+            mass = float(mass_t.item())
+            if mass <= 0.0:
+                continue
+
+            state = env.states[j]
+            obs_key = tuple(float(x) for x in env._obs_table[j].tolist())
+            terminal = state in env.terminate_from
+            key = (obs_key, terminal)
+
+            if key not in grouped:
+                grouped[key] = {
+                    "mass": 0.0,
+                    "reward_num": 0.0,
+                    "mask": torch.zeros_like(pred),
+                }
+
+            grouped[key]["mass"] += mass
+            grouped[key]["reward_num"] += mass * (
+                float(env.rewards.get(state, 0.0)) + float(env.step_cost)
+            )
+            grouped[key]["mask"][j] = 1.0
+
+        branches = []
+        for (_, terminal), stats in grouped.items():
+            mass = stats["mass"]
+            if mass <= 0.0:
+                continue
+            next_belief = self._normalize(pred * stats["mask"])
+            reward = stats["reward_num"] / mass
+            branches.append((mass, reward, next_belief, terminal))
+
+        return branches
+
     # Environment-specific helpers
     def _tmaze_reward(self, env, s, s_next):
         length = int(env.length)
@@ -289,14 +338,21 @@ class BeliefPolicy:
         raise ValueError("Unexpected TMaze state transition")
 
     def _prepare_environment(self, environment):
+        base_env = self._base_environment(environment)
+
         if not hasattr(environment, "get_belief"):
             raise ValueError("Not implemented get_belief()")
-        if hasattr(environment, "belief_type") and environment.belief_type != "exact":
+        if hasattr(base_env, "belief_type") and base_env.belief_type != "exact":
             raise NotImplementedError(
-                f"Only supports discrete beliefs, got {environment.belief_type}"
+                f"Only supports discrete beliefs, got {base_env.belief_type}"
             )
-        if hasattr(environment, "bayes") and (not environment.bayes):
-            environment.bayes = True
+        env_cursor = environment
+        while True:
+            if hasattr(env_cursor, "bayes") and (not env_cursor.bayes):
+                env_cursor.bayes = True
+            if not hasattr(env_cursor, "environment"):
+                break
+            env_cursor = env_cursor.environment
 
     def _planning_horizon(self, environment):
         if self.planning_horizon is not None:
@@ -323,6 +379,7 @@ class BeliefPolicy:
             self._env_signature = sig
 
     def _environment_config(self, environment): # temporary gpt solution to fix bug for reusing the policy
+        environment = self._base_environment(environment)
         items = [environment.__class__.__name__, int(environment.action_size), int(environment.observation_size)]
         for k, v in sorted(vars(environment).items()):
             if k in {"belief", "state", "steps", "terminal", "position", "last_position", "tiger_left", "goal_up"}:
@@ -331,7 +388,7 @@ class BeliefPolicy:
                 items.append((k, tuple(v.shape), self._tensor_digest(v)))
             elif isinstance(v, dict):
                 dict_items = []
-                for dk, dv in sorted(v.items(), key=lambda x: x[0]):
+                for dk, dv in sorted(v.items(), key=lambda x: repr(x[0])):
                     if torch.is_tensor(dv):
                         dict_items.append((dk, tuple(dv.shape), self._tensor_digest(dv)))
                     else:
@@ -341,6 +398,17 @@ class BeliefPolicy:
                 items.append((k, v))
         text = repr(items).encode("utf-8")
         return hashlib.md5(text).hexdigest()
+
+    def _base_environment(self, environment):
+        while hasattr(environment, "environment"):
+            environment = environment.environment
+        return environment
+
+    def extract_planning_belief(self, environment):
+        beliefs = environment.get_belief()
+        if not isinstance(beliefs, (tuple, list)) or len(beliefs) == 0:
+            raise ValueError("Expected environment.get_belief() to return a non-empty tuple/list.")
+        return beliefs[-1].detach().clone().float()
 
     def _tensor_digest(self, x):
         x = x.detach().cpu().contiguous()

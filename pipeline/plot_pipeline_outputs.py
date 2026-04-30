@@ -107,13 +107,20 @@ def csv_context(csv_path: Path, run_root: Path) -> dict:
         "is_train_metrics": csv_path.name.startswith("train_metrics_"),
         "is_summary_table": csv_path.name.endswith("_summary_table.csv"),
         "is_decoder_summary": csv_path.name == "decoder_episode_summary.csv",
+        "is_belief_eval": "belief_eval" in csv_path.stem,
         "sweep_label": None,
         "protocol_label": None,
     }
     if "protocol_a" in parts:
+        idx = parts.index("protocol_a")
         context["protocol_label"] = "Protocol A"
+        if idx + 1 < len(parts):
+            context["sweep_label"] = normalize_token(parts[idx + 1])
     elif "protocol_b" in parts:
+        idx = parts.index("protocol_b")
         context["protocol_label"] = "Protocol B"
+        if idx + 1 < len(parts):
+            context["sweep_label"] = normalize_token(parts[idx + 1])
     return context
 
 
@@ -146,7 +153,18 @@ def axis_label(name: str, context: dict | None = None) -> str:
 def csv_plot_title(csv_path: Path, y_col: str, context: dict) -> str:
     if context["is_train_metrics"]:
         return "Discounted return during training"
-    return metric_label(y_col)
+    metric_name = metric_label(y_col)
+    protocol_label = context.get("protocol_label")
+    sweep_label = context.get("sweep_label")
+    if context.get("is_belief_eval") and protocol_label and sweep_label:
+        return f"{protocol_label} {sweep_label} belief comparison: {metric_name}"
+    if context.get("is_belief_eval") and protocol_label:
+        return f"{protocol_label} belief comparison: {metric_name}"
+    if context.get("is_summary_table") and protocol_label and sweep_label:
+        return f"{protocol_label} {sweep_label} sweep: {metric_name}"
+    if context.get("is_summary_table") and protocol_label:
+        return f"{protocol_label}: {metric_name}"
+    return metric_name
 
 
 def workbook_plot_title(metric: str, context: dict) -> str:
@@ -189,29 +207,51 @@ def save_line_plot(
     plt.close(fig)
 
 
-def plot_train_metrics(csv_path: Path, run_root: Path, output_root: Path) -> None:
+def plot_train_metrics(
+    csv_path: Path,
+    run_root: Path,
+    output_root: Path,
+    *,
+    train_x_axis: str,
+) -> None:
     df = pd.read_csv(csv_path)
-    if df.empty or "train/num_transitions" not in df.columns or "train/disc_return" not in df.columns:
+    if df.empty or "train/disc_return" not in df.columns:
+        return
+
+    x_col = "train/episode" if train_x_axis == "episode" else "train/num_transitions"
+    if x_col not in df.columns:
         return
 
     rel_parent = csv_path.relative_to(run_root).parent
     out_dir = output_root / rel_parent / sanitize(csv_path.stem)
-    out_path = out_dir / "discounted_return_vs_steps.png"
+    suffix = "epochs" if train_x_axis == "episode" else "steps"
+    out_path = out_dir / f"discounted_return_vs_{suffix}.png"
     save_line_plot(
         df,
-        "train/num_transitions",
+        x_col,
         "train/disc_return",
         out_path,
         "Discounted return during training",
-        x_label="Environment steps",
+        x_label="Training episode" if train_x_axis == "episode" else "Environment steps",
         y_label="Discounted return",
     )
 
 
-def plot_csv_metrics(csv_path: Path, run_root: Path, output_root: Path) -> None:
+def plot_csv_metrics(
+    csv_path: Path,
+    run_root: Path,
+    output_root: Path,
+    *,
+    train_x_axis: str,
+) -> None:
     context = csv_context(csv_path, run_root)
     if context["is_train_metrics"]:
-        plot_train_metrics(csv_path, run_root, output_root)
+        plot_train_metrics(
+            csv_path,
+            run_root,
+            output_root,
+            train_x_axis=train_x_axis,
+        )
         return
 
     df = pd.read_csv(csv_path)
@@ -368,7 +408,12 @@ def main(args):
 
     for csv_path in run_root.rglob("*.csv"):
         if should_plot_csv(csv_path):
-            plot_csv_metrics(csv_path, run_root, output_root)
+            plot_csv_metrics(
+                csv_path,
+                run_root,
+                output_root,
+                train_x_axis=args.train_x_axis,
+            )
 
     for xlsx_path in run_root.rglob("*.xlsx"):
         plot_protocol_workbook(
@@ -384,5 +429,6 @@ if __name__ == "__main__":
     parser.add_argument("--run-root", type=str, required=True)
     parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--protocol-a-base-value", type=float, default=None)
+    parser.add_argument("--train-x-axis", choices=["episode", "steps"], default="steps")
     args = parser.parse_args()
     main(args)

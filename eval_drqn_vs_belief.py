@@ -13,12 +13,14 @@ try:
 except ImportError:
     from classic_belief import BeliefPolicy
 from agents.memory import Trajectory
+from belief_comparison import evaluate_agent_against_belief
 
 from environments.tmaze import TMaze
 from environments.tiger import Tiger
 from environments.crybaby import CryingBaby
 from environments.irrelevant import Irrelevant
 from environments.starkweather import StarkweatherEnv
+from environments.gridworld import GridWorld
 from utils import get_run_statistic
 
 
@@ -72,6 +74,17 @@ def make_environment_factory(args, train_args) -> Callable[[], object]:
             iti_min=_resolve_arg(args, train_args, 'iti_min', 0),
             nITI_microstates=_resolve_arg(args, train_args, 'nITI_microstates', 10),
             max_steps=_resolve_arg(args, train_args, 'max_steps', 200),
+        )
+    if environment_name == 'gridworld':
+        return lambda: GridWorld(
+            bayes=True,
+            size=_resolve_arg(args, train_args, 'size', 10),
+            tprob=_resolve_arg(args, train_args, 'tprob', 0.7),
+            discount=_resolve_arg(args, train_args, 'discount', 0.95),
+            max_steps=_resolve_arg(args, train_args, 'max_steps', 200),
+            reward_scheme=_resolve_arg(args, train_args, 'reward_scheme', 'julia'),
+            reward_margin=_resolve_arg(args, train_args, 'reward_margin', 2),
+            step_cost=_resolve_arg(args, train_args, 'step_cost', 0.0),
         )
     raise ValueError(f"Unsupported environment for belief planner: {environment_name}")
 
@@ -300,57 +313,19 @@ def get_eval_episodes(args) -> List[int]:
 def evaluate_single_checkpoint(args, train_args, env_factory, episode: int) -> Tuple[Dict, List[Dict], List[Dict]]:
     env_for_shapes = env_factory()
     agent = build_agent_for_episode(args, train_args, env_for_shapes, episode)
-    planner = BeliefPolicy(
+    summary, per_episode, per_step = evaluate_agent_against_belief(
+        agent,
+        env_factory,
+        args.total_steps,
+        epsilon=args.epsilon,
         planning_horizon=args.planning_horizon,
         belief_round_ndigits=args.belief_round_ndigits,
     )
-
-    drqn_mean_return, drqn_mean_disc_return, drqn_eval_episodes, drqn_eval_steps = eval_mean_returns_with_step_budget(
-        rollout_fn=lambda env: rollout_drqn_episode(agent, env, epsilon=0.0),
-        env_factory=env_factory,
-        total_steps=args.total_steps,
-    )
-    planner_mean_return, planner_mean_disc_return, planner_eval_episodes, planner_eval_steps = eval_mean_returns_with_step_budget(
-        rollout_fn=lambda env: rollout_planner_episode(planner, env, epsilon=0.0),
-        env_factory=env_factory,
-        total_steps=args.total_steps,
-    )
-
-    compare_summary, per_episode, per_step = evaluate_action_agreement_and_regret_step_budget(
-        agent=agent,
-        planner=planner,
-        env_factory=env_factory,
-        total_steps=args.total_steps,
-        epsilon=args.epsilon,
-    )
-
-    summary = {
+    summary.update({
         'run_id': args.run_id,
         'agent_episode': int(episode),
         'environment': args.environment,
-        'total_steps_budget': args.total_steps,
-        'planner_horizon': args.planning_horizon,
-        'belief_round_ndigits': args.belief_round_ndigits,
-        'metric_1_drqn_mean_return': float(drqn_mean_return),
-        'metric_1_planner_mean_return': float(planner_mean_return),
-        'metric_1_return_gap_planner_minus_drqn': float(planner_mean_return - drqn_mean_return),
-        'metric_1_drqn_mean_disc_return': float(drqn_mean_disc_return),
-        'metric_1_planner_mean_disc_return': float(planner_mean_disc_return),
-        'metric_1_disc_return_gap_planner_minus_drqn': float(planner_mean_disc_return - drqn_mean_disc_return),
-        'metric_1_drqn_eval_num_episodes': int(drqn_eval_episodes),
-        'metric_1_planner_eval_num_episodes': int(planner_eval_episodes),
-        'metric_1_drqn_eval_total_steps': int(drqn_eval_steps),
-        'metric_1_planner_eval_total_steps': int(planner_eval_steps),
-        'metric_2_step_weighted_action_agreement_rate': float(compare_summary['step_weighted_agreement_rate']),
-        'metric_3_step_weighted_mean_regret': float(compare_summary['step_weighted_mean_regret']),
-        'metric_3_step_weighted_mean_discounted_regret': float(compare_summary['step_weighted_mean_discounted_regret']),
-        'comparison_num_episodes': int(compare_summary['num_episodes']),
-        'comparison_total_executed_steps': int(compare_summary['total_executed_steps']),
-        'comparison_mean_episode_regret': float(compare_summary['mean_episode_regret']),
-        'comparison_mean_discounted_episode_regret': float(compare_summary['mean_discounted_episode_regret']),
-        'comparison_rollout_mean_drqn_return': float(compare_summary['mean_drqn_return_from_comparison_rollouts']),
-        'comparison_rollout_mean_drqn_disc_return': float(compare_summary['mean_drqn_disc_return_from_comparison_rollouts']),
-    }
+    })
 
     for row in per_episode:
         row['agent_episode'] = int(episode)
@@ -471,6 +446,15 @@ if __name__ == '__main__':
     stark.add_argument('--iti_min', type=float, default=None)
     stark.add_argument('--nITI_microstates', type=int, default=None)
     stark.add_argument('--max_steps', type=int, default=None)
+
+    grid = subparsers.add_parser('gridworld')
+    grid.add_argument('--size', type=int, default=None)
+    grid.add_argument('--tprob', type=float, default=None)
+    grid.add_argument('--discount', type=float, default=None)
+    grid.add_argument('--max_steps', type=int, default=None)
+    grid.add_argument('--reward_scheme', type=str, default=None)
+    grid.add_argument('--reward_margin', type=int, default=None)
+    grid.add_argument('--step_cost', type=float, default=None)
 
     args = parser.parse_args()
     if args.max_episode is None and args.episode is None and args.episodes_list is None:

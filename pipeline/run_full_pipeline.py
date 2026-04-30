@@ -341,25 +341,6 @@ def main(args):
             write_json(run_root / "resolved_config.json", manifest)
             run_command(cmd, repo_root, logs_dir / f"protocol_b_{label}.log", dry_run=args.dry_run)
 
-    belief_eval_cfg = config.get("belief_eval", {})
-    if stage_enabled(belief_eval_cfg):
-        script = resolve_script_path(belief_eval_cfg.get("script", "eval_drqn_vs_belief.py"), config_dir, repo_root)
-        out_dir = (results_dir / "drqn_vs_belief").resolve()
-        ensure_dir(out_dir)
-        cmd_args = [
-            "--run-id",
-            train_id,
-            "--weights-dir",
-            str(weights_dir),
-            "--output-dir",
-            str(out_dir),
-            *stringify_args(belief_eval_cfg.get("args", [])),
-        ]
-        cmd = build_python_command(script, cmd_args)
-        manifest["commands"].append({"stage": "belief_eval", "command": cmd})
-        write_json(run_root / "resolved_config.json", manifest)
-        run_command(cmd, repo_root, logs_dir / "belief_eval.log", dry_run=args.dry_run)
-
     manifest["train_id"] = train_id
     if mine_id is not None:
         manifest["mine_id"] = mine_id

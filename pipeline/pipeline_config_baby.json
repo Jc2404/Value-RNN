@@ -60,7 +60,8 @@
     "args": [
       "--run_mi",
       "--run_regression",
-      "--run_softmax_belief",
+      "--run_softmax_linear_probe",
+      "--run_softmax_mlp_probe",
       "--period", "500",
       "--end_episode", "4000",
       "--probe_num_samples", "10000",
@@ -80,7 +81,7 @@
       },
       {
         "label": "cry_if_full",
-        "flag": "--test_p_cry_if_hungry"
+        "flag": "--test_p_cry_if_full"
       }
     ]
   },
@@ -90,10 +91,13 @@
     "args": [
       "--run_mi",
       "--run_regression",
-      "--run_softmax_belief",
+      "--run_softmax_linear_probe",
+      "--run_softmax_mlp_probe",
+      "--run_belief_eval",
       "--num_samples", "10000",
       "--period", "500",
       "--end_episode", "4000",
+      "--belief_total_steps", "5000",
       "--valid_size", "0.2",
       "--probe_epochs", "300",
       "--probe_lr", "0.001",
@@ -109,18 +113,8 @@
       },
       {
         "label": "cry_if_full",
-        "flag": "--test_p_cry_if_hungry"
+        "flag": "--test_p_cry_if_full"
       }
-    ]
-  },
-  "belief_eval": {
-    "enabled": true,
-    "args": [
-      "--start-episode", "0",
-      "--max-episode", "4000",
-      "--period", "500",
-      "--output-prefix", "drqn_vs_belief",
-      "--total-steps", "5000"
     ]
   }
 }
