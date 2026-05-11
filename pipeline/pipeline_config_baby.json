@@ -1,5 +1,5 @@
 {
-  "run_name": "baby_1--pcry0.9",
+  "run_name": "baby_new_1--pcry0.9",
   "output_root": "runs",
   "train": {
     "enabled": true,
@@ -59,7 +59,6 @@
     "name": "protocolA",
     "args": [
       "--run_mi",
-      "--run_regression",
       "--run_softmax_linear_probe",
       "--run_softmax_mlp_probe",
       "--period", "500",
@@ -90,7 +89,6 @@
     "name": "protocolB",
     "args": [
       "--run_mi",
-      "--run_regression",
       "--run_softmax_linear_probe",
       "--run_softmax_mlp_probe",
       "--run_belief_eval",

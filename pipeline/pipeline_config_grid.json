@@ -25,7 +25,6 @@
     "enabled": true,
     "name": "frozen_decoders",
     "args": [
-      "--run_regression",
       "--run_softmax_belief",
       "--period", "250",
       "--end_episode", "4000",
@@ -63,7 +62,6 @@
     "name": "protocolA",
     "args": [
       "--run_mi",
-      "--run_regression",
       "--run_softmax_linear_probe",
       "--run_softmax_mlp_probe",
       "--period", "500",

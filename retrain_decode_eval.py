@@ -709,6 +709,23 @@ def main(args):
             venv = build_environment(train_args, overrides=overrides)
 
             task_name, task_value = parse_variant(vname)
+            run_softmax = bool(softmax_specs)
+            stage_bits = []
+            if args.run_mi:
+                stage_bits.append("mi")
+            if args.run_regression:
+                stage_bits.append("linreg")
+            if run_softmax:
+                stage_bits.append("softmax=" + ",".join(spec["name"] for spec in softmax_specs))
+            if args.run_state_decoder:
+                stage_bits.append("state")
+            if args.run_belief_eval:
+                stage_bits.append(f"belief_eval({args.belief_total_steps} steps)")
+            print(
+                f"[episode {episode}] {vname} starting variant eval: "
+                + (", ".join(stage_bits) if stage_bits else "no enabled stages"),
+                flush=True,
+            )
 
             # Row template
             def add_row(metric_name, value):
@@ -720,8 +737,12 @@ def main(args):
                     "value": float(value) if value is not None else float("nan"),
                 })
 
-            run_softmax = bool(softmax_specs)
             if args.run_mi or args.run_regression or run_softmax:
+                print(
+                    f"[episode {episode}] {vname} generating hidden/belief samples "
+                    f"(num_samples={args.num_samples}, epsilon={args.epsilon})",
+                    flush=True,
+                )
                 # Train sample
                 h_tr, b_tr = generate_hiddens_and_beliefs(
                     agent, venv,
@@ -731,8 +752,18 @@ def main(args):
                 )
                 h_tr = h_tr.to(device)
                 b_tr = tuple(bb.to(device) for bb in b_tr)
+                print(
+                    f"[episode {episode}] {vname} train samples ready: "
+                    f"h={tuple(h_tr.shape)}, belief_parts={len(b_tr)}",
+                    flush=True,
+                )
 
                 if not args.train_set:
+                    print(
+                        f"[episode {episode}] {vname} generating eval hidden/belief samples "
+                        f"(num_samples={args.num_samples})",
+                        flush=True,
+                    )
                     h_ev, b_ev = generate_hiddens_and_beliefs(
                         agent, venv,
                         num_samples=args.num_samples,
@@ -741,14 +772,29 @@ def main(args):
                     )
                     h_ev = h_ev.to(device)
                     b_ev = tuple(bb.to(device) for bb in b_ev)
+                    print(
+                        f"[episode {episode}] {vname} eval samples ready: "
+                        f"h={tuple(h_ev.shape)}, belief_parts={len(b_ev)}",
+                        flush=True,
+                    )
                 else:
                     h_ev, b_ev = h_tr, b_tr
 
                 if args.run_regression or run_softmax:
                     Xtr, Xte, Btr, Bte = shuffle_split_tensors(h_tr, b_tr, args.valid_size, device)
+                    print(
+                        f"[episode {episode}] {vname} split samples ready: "
+                        f"train={tuple(Xtr.shape)}, valid={tuple(Xte.shape)}, belief_parts={len(Btr)}",
+                        flush=True,
+                    )
 
                 # ---------------- MI ----------------
                 if args.run_mi:
+                    print(
+                        f"[episode {episode}] {vname} starting MI refit "
+                        f"(epochs={args.mine_num_epochs}, batch={args.mine_batch_size})",
+                        flush=True,
+                    )
                     mine = build_mine(h_tr, b_tr, args, device)
 
                     mine.optimize(
@@ -775,8 +821,16 @@ def main(args):
 
                 # ---------------- Linear regression ----------------
                 if args.run_regression:
+                    print(
+                        f"[episode {episode}] {vname} starting linear regression over {len(Btr)} belief part(s)",
+                        flush=True,
+                    )
                     # Evaluate per belief-part
                     for part_idx, (Ytr, Yte) in enumerate(zip(Btr, Bte)):
+                        print(
+                            f"[episode {episode}] {vname} linreg part {part_idx + 1}/{len(Btr)}",
+                            flush=True,
+                        )
                         probe = fit_linear_probe_torch(
                             Xtr, Ytr,
                             add_bias=True,
@@ -793,16 +847,32 @@ def main(args):
                             f"linreg/rsq_train-{part_idx}": rsq_tr,
                         })
                         add_row(f"linreg_rsq-{part_idx}", rsq_te)
+                    print(f"[episode {episode}] {vname} linear regression done", flush=True)
 
                 # ---------------- Softmax belief probe ----------------
                 if run_softmax:
+                    print(
+                        f"[episode {episode}] {vname} starting softmax probes: "
+                        + ", ".join(spec["name"] for spec in softmax_specs),
+                        flush=True,
+                    )
                     softmax_log = {
                         "train/episode": episode,
                         "task/variant": vname,
                     }
                     for spec in softmax_specs:
                         spec_name = spec["name"]
+                        print(
+                            f"[episode {episode}] {vname} softmax probe '{spec_name}' "
+                            f"over {len(Btr)} belief part(s)",
+                            flush=True,
+                        )
                         for part_idx, (Ytr, Yte) in enumerate(zip(Btr, Bte)):
+                            print(
+                                f"[episode {episode}] {vname} softmax '{spec_name}' "
+                                f"part {part_idx + 1}/{len(Btr)} start",
+                                flush=True,
+                            )
                             sm_state = fit_softmax_probe_torch(Xtr, Ytr, args, use_mlp_probe=spec["use_mlp"])
                             res_te = eval_softmax_probe_torch(Xte, Yte, sm_state, standardize=args.standardize)
                             res_tr = eval_softmax_probe_torch(Xtr, Ytr, sm_state, standardize=args.standardize)
@@ -828,10 +898,21 @@ def main(args):
                             softmax_log[log_ce_tr] = res_tr["ce"]
                             add_row(row_kl, res_te["kl"])
                             add_row(row_ce, res_te["ce"])
+                            print(
+                                f"[episode {episode}] {vname} softmax '{spec_name}' part {part_idx + 1}/{len(Btr)} done: "
+                                f"valid_kl={res_te['kl']:.6f}, valid_ce={res_te['ce']:.6f}",
+                                flush=True,
+                            )
                     wandb.log(softmax_log)
+                    print(f"[episode {episode}] {vname} softmax probes done", flush=True)
 
             # ---------------- State decoder
             if args.run_state_decoder:
+                print(
+                    f"[episode {episode}] {vname} starting state decoder "
+                    f"(num_samples={args.num_samples})",
+                    flush=True,
+                )
                 h_s, states = generate_hiddens_and_states(
                     agent, venv,
                     num_samples=args.num_samples,
@@ -868,8 +949,19 @@ def main(args):
                 })
                 add_row("state_LL", res_te["LL"])
                 add_row("state_pcor", res_te["pcor"])
+                print(
+                    f"[episode {episode}] {vname} state decoder done: "
+                    f"valid_LL={res_te['LL']:.6f}, valid_pcor={res_te['pcor']:.6f}",
+                    flush=True,
+                )
 
             if args.run_belief_eval:
+                print(
+                    f"[episode {episode}] {vname} starting belief comparison "
+                    f"(total_steps={args.belief_total_steps}, epsilon={args.belief_eval_epsilon}, "
+                    f"horizon={args.belief_planning_horizon})",
+                    flush=True,
+                )
                 env_factory = lambda overrides=overrides: build_environment(train_args, overrides=overrides)
                 belief_summary, belief_per_episode, belief_per_step = evaluate_agent_against_belief(
                     agent,
@@ -878,6 +970,7 @@ def main(args):
                     epsilon=args.belief_eval_epsilon,
                     planning_horizon=args.belief_planning_horizon,
                     belief_round_ndigits=args.belief_round_ndigits,
+                    progress_prefix=f"[episode {episode}] {vname}",
                 )
 
                 belief_summary.update({
@@ -923,6 +1016,16 @@ def main(args):
                         "task_value": task_value,
                     })
                     belief_per_step_rows.append(row)
+
+                print(
+                    f"[episode {episode}] {vname} belief comparison done: "
+                    f"drqn_disc={belief_summary['metric_1_drqn_mean_disc_return']:.6f}, "
+                    f"planner_disc={belief_summary['metric_1_planner_mean_disc_return']:.6f}, "
+                    f"agreement={belief_summary['metric_2_step_weighted_action_agreement_rate']:.6f}",
+                    flush=True,
+                )
+
+            print(f"[episode {episode}] {vname} variant eval complete", flush=True)
 
     with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
         for ep, rows in episode_rows.items():

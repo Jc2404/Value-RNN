@@ -5,6 +5,7 @@ import torch
 
 from agents.classic_belief import BeliefPolicy
 from agents.memory import Trajectory
+from environments.starkweather import StarkweatherEnv
 
 
 def _move_hidden_to_device(hidden_states, device):
@@ -71,7 +72,7 @@ def eval_mean_returns_with_step_budget(rollout_fn, env_factory, total_steps: int
     return mean_return, mean_disc_return, episodes, steps
 
 
-def evaluate_action_agreement_and_regret_step_budget(agent, planner, env_factory, total_steps: int, epsilon: float = 0.0):
+def evaluate_belief_comparison_metrics(agent, planner, env_factory, total_steps: int, epsilon: float = 0.0):
     device = next(agent.Q.parameters()).device
 
     per_episode: List[Dict] = []
@@ -82,6 +83,9 @@ def evaluate_action_agreement_and_regret_step_budget(agent, planner, env_factory
     global_agreement_sum = 0
     global_regret_sum = 0.0
     global_discounted_regret_sum = 0.0
+    global_q_mse_sum = 0.0
+    global_q_mae_sum = 0.0
+    global_q_chosen_action_mse_sum = 0.0
 
     while total_executed_steps < total_steps:
         env = env_factory()
@@ -118,6 +122,11 @@ def evaluate_action_agreement_and_regret_step_budget(agent, planner, env_factory
             agreement = int(drqn_action == planner_action)
             regret = float(torch.max(planner_q).item() - planner_q[drqn_action].item())
 
+            q_error = drqn_q - planner_q
+            q_mse = float((q_error ** 2).mean().item())
+            q_mae = float(q_error.abs().mean().item())
+            q_chosen_action_mse = float((drqn_q[drqn_action] - planner_q[drqn_action]) ** 2)
+
             agreement_sum += agreement
             regret_sum += regret
             discounted_regret_sum += (float(env.gamma) ** t) * regret
@@ -126,6 +135,9 @@ def evaluate_action_agreement_and_regret_step_budget(agent, planner, env_factory
             global_agreement_sum += agreement
             global_regret_sum += regret
             global_discounted_regret_sum += (float(env.gamma) ** t) * regret
+            global_q_mse_sum += q_mse
+            global_q_mae_sum += q_mae
+            global_q_chosen_action_mse_sum += q_chosen_action_mse
             total_executed_steps += 1
 
             per_step.append({
@@ -141,6 +153,9 @@ def evaluate_action_agreement_and_regret_step_budget(agent, planner, env_factory
                 "planner_q_drqn_action": float(planner_q[drqn_action].item()),
                 "drqn_q_max": float(torch.max(drqn_q).item()),
                 "drqn_q_chosen_action": float(drqn_q[drqn_action].item()),
+                "planner_q_mse": q_mse,
+                "planner_q_mae": q_mae,
+                "planner_q_chosen_action_mse": q_chosen_action_mse,
             })
 
             obs, reward, done = env.step(drqn_action)
@@ -175,6 +190,9 @@ def evaluate_action_agreement_and_regret_step_budget(agent, planner, env_factory
     step_weighted_agreement = global_agreement_sum / max(total_executed_steps, 1)
     step_weighted_mean_regret = global_regret_sum / max(total_executed_steps, 1)
     step_weighted_mean_discounted_regret = global_discounted_regret_sum / max(total_executed_steps, 1)
+    step_weighted_q_mse = global_q_mse_sum / max(total_executed_steps, 1)
+    step_weighted_q_mae = global_q_mae_sum / max(total_executed_steps, 1)
+    step_weighted_q_chosen_action_mse = global_q_chosen_action_mse_sum / max(total_executed_steps, 1)
 
     return {
         "total_executed_steps": total_executed_steps,
@@ -182,6 +200,9 @@ def evaluate_action_agreement_and_regret_step_budget(agent, planner, env_factory
         "step_weighted_agreement_rate": step_weighted_agreement,
         "step_weighted_mean_regret": step_weighted_mean_regret,
         "step_weighted_mean_discounted_regret": step_weighted_mean_discounted_regret,
+        "metric_2_step_weighted_q_mse": step_weighted_q_mse,
+        "metric_2_step_weighted_q_mae": step_weighted_q_mae,
+        "metric_2_step_weighted_q_chosen_action_mse": step_weighted_q_chosen_action_mse,
         "mean_episode_regret": mean_episode_regret,
         "mean_discounted_episode_regret": mean_discounted_episode_regret,
         "mean_drqn_return_from_comparison_rollouts": mean_drqn_return,
@@ -197,7 +218,12 @@ def evaluate_agent_against_belief(
     epsilon: float = 0.0,
     planning_horizon=None,
     belief_round_ndigits: int = 10,
+    progress_prefix: str | None = None,
 ):
+    def progress(message):
+        if progress_prefix:
+            print(f"{progress_prefix} {message}", flush=True)
+
     env_for_checks = env_factory()
     assert_planner_supported_environment(env_for_checks)
 
@@ -206,42 +232,51 @@ def evaluate_agent_against_belief(
         belief_round_ndigits=belief_round_ndigits,
     )
 
-    drqn_mean_return, drqn_mean_disc_return, drqn_eval_episodes, drqn_eval_steps = eval_mean_returns_with_step_budget(
-        rollout_fn=lambda env: rollout_drqn_episode(agent, env, epsilon=0.0),
-        env_factory=env_factory,
-        total_steps=total_steps,
-    )
+    progress(f"belief eval phase 1/2: planner return eval start (step_budget={total_steps})")
     planner_mean_return, planner_mean_disc_return, planner_eval_episodes, planner_eval_steps = eval_mean_returns_with_step_budget(
         rollout_fn=lambda env: rollout_planner_episode(planner, env, epsilon=0.0),
         env_factory=env_factory,
         total_steps=total_steps,
     )
+    progress(
+        "belief eval phase 1/2 done: "
+        f"episodes={planner_eval_episodes}, total_steps={planner_eval_steps}, "
+        f"disc_return={planner_mean_disc_return:.6f}"
+    )
 
-    compare_summary, per_episode, per_step = evaluate_action_agreement_and_regret_step_budget(
+    progress(
+        "belief eval phase 2/2: comparison metrics start "
+        f"(step_budget={total_steps}, epsilon={epsilon})"
+    )
+    compare_summary, per_episode, per_step = evaluate_belief_comparison_metrics(
         agent=agent,
         planner=planner,
         env_factory=env_factory,
         total_steps=total_steps,
         epsilon=epsilon,
     )
+    progress(
+        "belief eval phase 2/2 done: "
+        f"episodes={compare_summary['num_episodes']}, total_steps={compare_summary['total_executed_steps']}, "
+        f"agreement={compare_summary['step_weighted_agreement_rate']:.6f}"
+    )
 
     summary = {
         "total_steps_budget": int(total_steps),
         "planner_horizon": planning_horizon,
         "belief_round_ndigits": int(belief_round_ndigits),
-        "metric_1_drqn_mean_return": float(drqn_mean_return),
         "metric_1_planner_mean_return": float(planner_mean_return),
-        "metric_1_return_gap_planner_minus_drqn": float(planner_mean_return - drqn_mean_return),
-        "metric_1_drqn_mean_disc_return": float(drqn_mean_disc_return),
         "metric_1_planner_mean_disc_return": float(planner_mean_disc_return),
-        "metric_1_disc_return_gap_planner_minus_drqn": float(planner_mean_disc_return - drqn_mean_disc_return),
-        "metric_1_drqn_eval_num_episodes": int(drqn_eval_episodes),
         "metric_1_planner_eval_num_episodes": int(planner_eval_episodes),
-        "metric_1_drqn_eval_total_steps": int(drqn_eval_steps),
         "metric_1_planner_eval_total_steps": int(planner_eval_steps),
+        "metric_1_return_gap_planner_minus_drqn": float(planner_mean_return - compare_summary["mean_drqn_return_from_comparison_rollouts"]),
+        "metric_1_disc_return_gap_planner_minus_drqn": float(planner_mean_disc_return - compare_summary["mean_drqn_disc_return_from_comparison_rollouts"]),
         "metric_2_step_weighted_action_agreement_rate": float(compare_summary["step_weighted_agreement_rate"]),
         "metric_3_step_weighted_mean_regret": float(compare_summary["step_weighted_mean_regret"]),
         "metric_3_step_weighted_mean_discounted_regret": float(compare_summary["step_weighted_mean_discounted_regret"]),
+        "metric_2_step_weighted_q_mse": float(compare_summary["metric_2_step_weighted_q_mse"]),
+        "metric_2_step_weighted_q_mae": float(compare_summary["metric_2_step_weighted_q_mae"]),
+        "metric_2_step_weighted_q_chosen_action_mse": float(compare_summary["metric_2_step_weighted_q_chosen_action_mse"]),
         "comparison_num_episodes": int(compare_summary["num_episodes"]),
         "comparison_total_executed_steps": int(compare_summary["total_executed_steps"]),
         "comparison_mean_episode_regret": float(compare_summary["mean_episode_regret"]),
