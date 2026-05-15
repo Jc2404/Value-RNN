@@ -96,6 +96,7 @@
       "--period", "500",
       "--end_episode", "4000",
       "--belief_total_steps", "5000",
+      "--belief_planning_horizon","20",
       "--valid_size", "0.2",
       "--probe_epochs", "300",
       "--probe_lr", "0.001",

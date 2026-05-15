@@ -89,7 +89,7 @@ class GridWorld:
         size: int = 10,
         tprob: float = 0.7,
         discount: float = 0.95,
-        max_steps: int = 200,
+        max_steps: int = 60,
         bayes: bool = True,
         seed: Optional[int] = None,
         reward_scheme: str = "julia",

@@ -50,11 +50,18 @@ def rollout_planner_episode(planner, env, epsilon: float = 0.0) -> Tuple[Traject
     return trajectory, int(trajectory.num_transitions)
 
 
-def eval_mean_returns_with_step_budget(rollout_fn, env_factory, total_steps: int) -> Tuple[float, float, int, int]:
+def eval_mean_returns_with_step_budget(
+    rollout_fn,
+    env_factory,
+    total_steps: int,
+    progress_fn: Callable[[str], None] | None = None,
+    progress_interval: int | None = None,
+) -> Tuple[float, float, int, int]:
     sum_returns = 0.0
     sum_disc_returns = 0.0
     episodes = 0
     steps = 0
+    last_reported_steps = 0
 
     while steps < total_steps:
         env = env_factory()
@@ -67,12 +74,28 @@ def eval_mean_returns_with_step_budget(rollout_fn, env_factory, total_steps: int
         episodes += 1
         steps += ep_steps
 
+        if progress_fn is not None and progress_interval is not None and progress_interval > 0:
+            if steps - last_reported_steps >= progress_interval:
+                progress_fn(
+                    f"planner eval progress: steps={min(steps, total_steps)}/{total_steps}, "
+                    f"episodes={episodes}"
+                )
+                last_reported_steps = steps
+
     mean_return = sum_returns / max(episodes, 1)
     mean_disc_return = sum_disc_returns / max(episodes, 1)
     return mean_return, mean_disc_return, episodes, steps
 
 
-def evaluate_belief_comparison_metrics(agent, planner, env_factory, total_steps: int, epsilon: float = 0.0):
+def evaluate_belief_comparison_metrics(
+    agent,
+    planner,
+    env_factory,
+    total_steps: int,
+    epsilon: float = 0.0,
+    progress_fn: Callable[[str], None] | None = None,
+    progress_interval: int | None = None,
+):
     device = next(agent.Q.parameters()).device
 
     per_episode: List[Dict] = []
@@ -86,6 +109,9 @@ def evaluate_belief_comparison_metrics(agent, planner, env_factory, total_steps:
     global_q_mse_sum = 0.0
     global_q_mae_sum = 0.0
     global_q_chosen_action_mse_sum = 0.0
+
+    report_interval = progress_interval if (progress_fn is not None and progress_interval and progress_interval > 0) else None
+    next_report_step = report_interval
 
     while total_executed_steps < total_steps:
         env = env_factory()
@@ -139,6 +165,17 @@ def evaluate_belief_comparison_metrics(agent, planner, env_factory, total_steps:
             global_q_mae_sum += q_mae
             global_q_chosen_action_mse_sum += q_chosen_action_mse
             total_executed_steps += 1
+
+            if next_report_step is not None and progress_fn is not None and total_executed_steps >= next_report_step:
+                progress_fn(
+                    f"comparison progress: global_step={total_executed_steps}/{total_steps}, "
+                    f"episodes={episode_idx + 1}, avg_agreement={global_agreement_sum / total_executed_steps:.4f}, "
+                    f"avg_regret={global_regret_sum / total_executed_steps:.4f}, "
+                    f"avg_q_mse={global_q_mse_sum / total_executed_steps:.4f}"
+                )
+                assert report_interval is not None
+                assert next_report_step is not None
+                next_report_step = next_report_step + report_interval
 
             per_step.append({
                 "episode": episode_idx,
@@ -219,6 +256,7 @@ def evaluate_agent_against_belief(
     planning_horizon=None,
     belief_round_ndigits: int = 10,
     progress_prefix: str | None = None,
+    progress_interval: int | None = None,
 ):
     def progress(message):
         if progress_prefix:
@@ -237,6 +275,8 @@ def evaluate_agent_against_belief(
         rollout_fn=lambda env: rollout_planner_episode(planner, env, epsilon=0.0),
         env_factory=env_factory,
         total_steps=total_steps,
+        progress_fn=progress if progress_prefix else None,
+        progress_interval=progress_interval,
     )
     progress(
         "belief eval phase 1/2 done: "
@@ -254,6 +294,8 @@ def evaluate_agent_against_belief(
         env_factory=env_factory,
         total_steps=total_steps,
         epsilon=epsilon,
+        progress_fn=progress if progress_prefix else None,
+        progress_interval=progress_interval,
     )
     progress(
         "belief eval phase 2/2 done: "

@@ -971,6 +971,7 @@ def main(args):
                     planning_horizon=args.belief_planning_horizon,
                     belief_round_ndigits=args.belief_round_ndigits,
                     progress_prefix=f"[episode {episode}] {vname}",
+                    progress_interval=args.belief_progress_interval,
                 )
 
                 belief_summary.update({
@@ -1019,7 +1020,7 @@ def main(args):
 
                 print(
                     f"[episode {episode}] {vname} belief comparison done: "
-                    f"drqn_disc={belief_summary['metric_1_drqn_mean_disc_return']:.6f}, "
+                    f"drqn_disc={belief_summary['comparison_rollout_mean_drqn_disc_return']:.6f}, "
                     f"planner_disc={belief_summary['metric_1_planner_mean_disc_return']:.6f}, "
                     f"agreement={belief_summary['metric_2_step_weighted_action_agreement_rate']:.6f}",
                     flush=True,
@@ -1124,6 +1125,8 @@ if __name__ == "__main__":
     parser.add_argument("--belief_eval_epsilon", type=float, default=0.0)
     parser.add_argument("--belief_planning_horizon", type=int, default=None)
     parser.add_argument("--belief_round_ndigits", type=int, default=10)
+    parser.add_argument("--belief_progress_interval", type=int, default=10,
+                        help="Print belief comparison progress every N steps during evaluation.")
 
     # shared probe hyperparams (used by softmax + state; linreg uses closed form)
     parser.add_argument("--probe_epochs", type=int, default=300)
