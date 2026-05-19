@@ -1,27 +1,11 @@
-# protocolB_decoder_all.py
 # Protocol B: for EACH (episode, env-variant), REFIT each enabled decoder on that variant,
-# then evaluate on that SAME variant (resample unless --train_set).
+# then evaluate on that SAME variant.
 #
 # Supports 4 decoder types (enabled via flags):
 #   1) MINE MI (mutual information)
 #   2) Linear regression (belief -> R^2)
 #   3) Softmax belief probe (belief -> KL, CE)
 #   4) State decoder (hidden -> state labels; LL, pcor)  [uses generate_hiddens_and_states]
-#
-# Includes:
-#   - W&B step fix (define_metric + MINE logger wrapper with monotonic global_step)
-#   - Excel export with one sheet per episode (x = task_value, y = metrics in columns)
-#
-# Assumptions:
-#   - get_run_statistic(train_id) returns train_args with .environment, .episodes, etc.
-#   - generate_hiddens_and_beliefs(agent, env, ...) returns (hiddens [N,H], beliefs tuple)
-#   - generate_hiddens_and_states(agent, env, ...) returns (hiddens [N,H], states [N] or [N,K])
-#   - DRQN.load(train_id, episode=episode) works.
-#
-# NOTE:
-#   - For MI/regression/softmax probes: the "label" is belief vectors (probabilities).
-#   - For state decoder: the "label" is discrete states (ints 0..K-1). If yours are not,
-#     you MUST map them before training (you can do it in generate_hiddens_and_states).
 
 import csv
 import json
@@ -431,21 +415,11 @@ def softmax_probe_loss(log_probs, targets, loss_type="kl"):
 
 def resolve_softmax_probe_specs(args):
     specs = []
-    explicit = False
 
     if getattr(args, "run_softmax_linear_probe", False):
-        specs.append({"name": "linear", "use_mlp": False, "legacy_names": False})
-        explicit = True
+        specs.append({"name": "linear", "use_mlp": False})
     if getattr(args, "run_softmax_mlp_probe", False):
-        specs.append({"name": "mlp", "use_mlp": True, "legacy_names": False})
-        explicit = True
-
-    if not explicit and args.run_softmax_belief:
-        specs.append({
-            "name": "mlp" if args.use_mlp_probe else "linear",
-            "use_mlp": args.use_mlp_probe,
-            "legacy_names": True,
-        })
+        specs.append({"name": "mlp", "use_mlp": True})
 
     return specs
 
@@ -692,7 +666,7 @@ def main(args):
     ):
         raise ValueError(
             "No evaluations enabled. Use at least one of: "
-            "--run_mi --run_regression --run_softmax_belief "
+            "--run_mi --run_regression "
             "--run_softmax_linear_probe --run_softmax_mlp_probe "
             "--run_state_decoder --run_belief_eval"
         )
@@ -877,20 +851,20 @@ def main(args):
                             res_te = eval_softmax_probe_torch(Xte, Yte, sm_state, standardize=args.standardize)
                             res_tr = eval_softmax_probe_torch(Xtr, Ytr, sm_state, standardize=args.standardize)
 
-                            if spec["legacy_names"]:
-                                log_kl = f"softmax/kl-{part_idx}"
-                                log_ce = f"softmax/ce-{part_idx}"
-                                log_kl_tr = f"softmax/kl_train-{part_idx}"
-                                log_ce_tr = f"softmax/ce_train-{part_idx}"
-                                row_kl = f"softmax_kl-{part_idx}"
-                                row_ce = f"softmax_ce-{part_idx}"
+                            if part_idx == 0:
+                                log_kl = f"softmax/{spec_name}/KL"
+                                log_ce = f"softmax/{spec_name}/CE"
+                                log_kl_tr = f"softmax/{spec_name}/KL_train"
+                                log_ce_tr = f"softmax/{spec_name}/CE_train"
+                                row_kl = f"softmax_{spec_name}_KL"
+                                row_ce = f"softmax_{spec_name}_CE"
                             else:
-                                log_kl = f"softmax/{spec_name}/kl-{part_idx}"
-                                log_ce = f"softmax/{spec_name}/ce-{part_idx}"
-                                log_kl_tr = f"softmax/{spec_name}/kl_train-{part_idx}"
-                                log_ce_tr = f"softmax/{spec_name}/ce_train-{part_idx}"
-                                row_kl = f"softmax_{spec_name}_kl-{part_idx}"
-                                row_ce = f"softmax_{spec_name}_ce-{part_idx}"
+                                log_kl = f"softmax/{spec_name}/KL-{part_idx}"
+                                log_ce = f"softmax/{spec_name}/CE-{part_idx}"
+                                log_kl_tr = f"softmax/{spec_name}/KL_train-{part_idx}"
+                                log_ce_tr = f"softmax/{spec_name}/CE_train-{part_idx}"
+                                row_kl = f"softmax_{spec_name}_KL-{part_idx}"
+                                row_ce = f"softmax_{spec_name}_CE-{part_idx}"
 
                             softmax_log[log_kl] = res_te["kl"]
                             softmax_log[log_ce] = res_te["ce"]
@@ -1115,7 +1089,10 @@ if __name__ == "__main__":
     # enable decoders (MUST set at least one)
     parser.add_argument("--run_mi", action="store_true")
     parser.add_argument("--run_regression", action="store_true")
-    parser.add_argument("--run_softmax_belief", action="store_true")
+    parser.add_argument("--run_softmax_linear_probe", action="store_true",
+                        help="Run the 1-layer linear softmax belief probe.")
+    parser.add_argument("--run_softmax_mlp_probe", action="store_true",
+                        help="Run the MLP softmax belief probe.")
     parser.add_argument("--run_state_decoder", action="store_true")
     parser.add_argument("--run_belief_eval", action="store_true",
                         help="Also compare each tested variant against the belief planner and save JSON/CSV summaries.")
@@ -1143,11 +1120,6 @@ if __name__ == "__main__":
                         help="Disable float64 in linreg (use float32 only).")
 
     # softmax probe architecture
-    parser.add_argument("--run_softmax_linear_probe", action="store_true",
-                        help="Run the 1-layer linear softmax belief probe.")
-    parser.add_argument("--run_softmax_mlp_probe", action="store_true",
-                        help="Run the MLP softmax belief probe.")
-    parser.add_argument("--use_mlp_probe", action="store_true")
     parser.add_argument("--mlp_hidden_dim", type=int, default=128)
     parser.add_argument("--mlp_dropout", type=float, default=0.0)
     parser.add_argument("--belief_loss", choices=["kl", "mse"], default="kl")

@@ -1,0 +1,65 @@
+{
+  "run_name": "baby_new_1--pcry0.9",
+  "output_root": "runs",
+  "train": {
+    "enabled": true,
+    "name": "baby_agent_p_0.9",
+    "args": [
+      "--eval-period", "10",
+      "--num-rollouts", "50",
+      "--num-episodes", "2000",
+      "--batch-size", "32",
+      "--learning-rate", "0.001",
+      "--num-gradient-steps", "10",
+      "--target-period", "10",
+      "--epsilon", "0.2",
+      "--buffer-capacity", "8192",
+      "crybaby"
+    ]
+  },
+  "decoder_train": {
+    "enabled": true,
+    "name": "frozen_decoders",
+    "args": [
+      "--run_regression",
+      "--run_softmax_belief",
+      "--period", "500",
+      "--end_episode", "2000",
+      "--probe_num_samples", "10000",
+      "--probe_valid_size", "0.2",
+      "--probe_epochs", "300",
+      "--probe_lr", "0.001",
+      "--probe_batch_size", "1024",
+      "--sm_use_mlp",
+      "--belief_loss", "kl"
+    ]
+  },
+  "protocol_b": {
+    "enabled": true,
+    "name": "protocolB",
+    "args": [
+      "--run_mi",
+      "--run_softmax_linear_probe",
+      "--run_softmax_mlp_probe",
+      "--run_belief_eval",
+      "--num_samples", "10000",
+      "--period", "1000",
+      "--end_episode", "2000",
+      "--belief_total_steps", "5000",
+      "--belief_planning_horizon","10",
+      "--valid_size", "0.2",
+      "--probe_epochs", "300",
+      "--probe_lr", "0.001",
+      "--probe_batch_size", "1024",
+      "--mine_num_epochs", "400",
+      "--mine_batch_size", "1024",
+      "--mine_learning_rate", "0.001"
+    ],
+    "tests": [
+      {
+        "label": "cry_if_hungry",
+        "flag": "--test_p_cry_if_hungry"
+      }
+    ]
+  }
+}
