@@ -62,7 +62,7 @@ class CryingBaby:
         reward_quiet=0.0,             # reward if QUIET (default 0)
 
         # --- episode
-        horizon=40,
+        horizon=15,
 
         # --- belief tracking
         bayes=False,
