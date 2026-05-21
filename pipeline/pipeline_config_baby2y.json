@@ -7,7 +7,7 @@
     "args": [
       "--eval-period", "10",
       "--num-rollouts", "50",
-      "--num-episodes", "2000",
+      "--num-episodes", "1000",
       "--batch-size", "32",
       "--learning-rate", "0.001",
       "--num-gradient-steps", "10",
@@ -15,23 +15,6 @@
       "--epsilon", "0.2",
       "--buffer-capacity", "8192",
       "crybaby"
-    ]
-  },
-  "decoder_train": {
-    "enabled": true,
-    "name": "frozen_decoders",
-    "args": [
-      "--run_regression",
-      "--run_softmax_belief",
-      "--period", "500",
-      "--end_episode", "2000",
-      "--probe_num_samples", "10000",
-      "--probe_valid_size", "0.2",
-      "--probe_epochs", "300",
-      "--probe_lr", "0.001",
-      "--probe_batch_size", "1024",
-      "--sm_use_mlp",
-      "--belief_loss", "kl"
     ]
   },
   "protocol_b": {
@@ -43,8 +26,8 @@
       "--run_softmax_mlp_probe",
       "--run_belief_eval",
       "--num_samples", "10000",
-      "--period", "1000",
-      "--end_episode", "2000",
+      "--period", "200",
+      "--end_episode", "1000",
       "--belief_total_steps", "5000",
       "--belief_planning_horizon","10",
       "--valid_size", "0.2",
