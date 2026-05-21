@@ -108,7 +108,7 @@ def pick_variants(train_args, args):
 
     if env_name == "tmaze":
         if args.test_stochasticity:
-            grid = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
+            grid = [0.0, 0.1, 0.2, 0.3, 0.4]
             return [(f"tmaze_stochasticity={s}", {"stochasticity": s}) for s in grid]
 
     elif env_name == "hike":
@@ -118,7 +118,7 @@ def pick_variants(train_args, args):
 
     elif env_name == "starkweather":
         if args.test_p_omission:
-            grid = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25]
+            grid = [0.0, 0.1, 0.2, 0.3, 0.4]
             return [(f"starkweather_p_omission={p}", {"p_omission": p}) for p in grid]
         if args.test_bin_size:
             grid = [train_args.bin_size, max(1, train_args.bin_size // 2), train_args.bin_size * 2]
@@ -148,7 +148,7 @@ def pick_variants(train_args, args):
         
     elif env_name == "gridworld":
         if args.test_tprob:
-            grid = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+            grid = [0.6, 0.7, 0.8, 0.9, 1.0]
             return [(f"gridworld_tprob={p}", {"tprob": p}) for p in grid]
         if args.test_reward_scheme:
             grid = ["symmetric", "center", "scaled"]
@@ -159,10 +159,10 @@ def pick_variants(train_args, args):
     
     elif env_name == "crybaby":
         if args.test_p_cry_if_hungry:
-            grid = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+            grid = [0.6, 0.7, 0.8, 0.9, 1.0]
             return [(f"crybaby_p_cry_if_hungry={p}", {"p_cry_if_hungry": p}) for p in grid]
         if args.test_p_cry_if_full:
-            grid = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+            grid = [0.0, 0.1, 0.2, 0.3, 0.4]
             return [(f"crybaby_p_cry_if_full={p}", {"p_cry_if_full": p}) for p in grid]
         
     return []

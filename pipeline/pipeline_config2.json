@@ -1,24 +1,22 @@
 {
-  "run_name": "Grid_1-p0.7-w10",
+  "run_name": "tmaze_1-length50_-stochasticity0.0",
   "output_root": "runs",
   "train": {
     "enabled": true,
-    "name": "Grid_1-agent-p0.7-w10",
+    "name": "tmaze_agent",
     "args": [
       "--eval-period", "5",
       "--num-rollouts", "50",
-      "--num-episodes", "4000",
+      "--num-episodes", "3001",
       "--batch-size", "32",
       "--learning-rate", "0.001",
       "--num-gradient-steps", "10",
       "--target-period", "10",
       "--epsilon", "0.2",
       "--buffer-capacity", "8192",
-      "gridworld",
-      "--size", "10",
-      "--tprob", "0.8",
-      "--reward-scheme", "symmetric",
-      "--reward-margin", "2"
+      "tmaze",
+      "--length", "50",
+      "--stochasticity", "0.0"
     ]
   },
   "protocol_a": {
@@ -26,10 +24,11 @@
     "name": "protocolA",
     "args": [
       "--run_mi",
+      "--run_regression",
       "--run_softmax_linear_probe",
       "--run_softmax_mlp_probe",
       "--period", "500",
-      "--end_episode", "4000",
+      "--end_episode", "2500",
       "--probe_num_samples", "10000",
       "--probe_valid_size", "0.2",
       "--probe_epochs", "300",
@@ -42,12 +41,8 @@
     ],
     "tests": [
       {
-        "label": "reward_scheme",
-        "flag": "--test_reward_scheme"
-      },
-      {
-        "label": "reward_margin",
-        "flag": "--test_reward_margin"
+        "label": "stochasticity",
+        "flag": "--test_stochasticity"
       }
     ]
   },
@@ -62,9 +57,8 @@
       "--run_belief_eval",
       "--num_samples", "10000",
       "--period", "500",
-      "--end_episode", "4000",
-      "--belief_total_steps", "4000",
-      "--belief_planning_horizon","10",
+      "--end_episode", "2500",
+      "--belief_total_steps", "5000",
       "--valid_size", "0.2",
       "--probe_epochs", "300",
       "--probe_lr", "0.001",
@@ -75,16 +69,12 @@
     ],
     "tests": [
       {
-        "label": "test_grid_size",
-        "flag": "--test_grid_size"
+        "label": "stochasticity",
+        "flag": "--test_stochasticity"
       },
       {
-        "label": "reward_scheme",
-        "flag": "--test_reward_scheme"
-      },
-      {
-        "label": "reward_margin",
-        "flag": "--test_reward_margin"
+        "label": "length",
+        "flag": "--test_length"
       }
     ]
   }
