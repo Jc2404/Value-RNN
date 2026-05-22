@@ -13,6 +13,13 @@ METRIC_LABELS = {
     "R2_b0": "Belief decoder R^2",
     "KL_b0": "Belief decoder KL divergence",
     "CE_b0": "Belief decoder cross-entropy",
+    "H_true_b0": "True belief entropy",
+    "H_pred_b0": "Decoded belief entropy",
+    "JS_b0": "Jensen-Shannon divergence",
+    "entropy_b0": "Belief entropy estimate",
+    "normalized_CE_b0": "Normalized cross-entropy",
+    "normalized_MI": "Normalized mutual information",
+    "MI_normalized_by_mlp_entropy": "Normalized mutual information",
     "train/disc_return": "Discounted return",
     "train/return": "Return",
     "train/num_transitions": "Environment steps",
@@ -48,6 +55,8 @@ NON_PLOTTED_COLUMNS = {
     "total_steps_budget",
 }
 
+DERIVED_METRIC_EPSILON = 1e-8
+
 
 def sanitize(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "plot"
@@ -68,12 +77,20 @@ def normalize_token(text: str) -> str:
             words.append("DRQN")
         elif lowered == "mi":
             words.append("MI")
+        elif lowered == "nmi":
+            words.append("NMI")
         elif lowered == "kl":
             words.append("KL")
         elif lowered == "ce":
             words.append("CE")
+        elif lowered == "nce":
+            words.append("NCE")
         elif lowered == "r2":
             words.append("R^2")
+        elif lowered == "js":
+            words.append("JS")
+        elif lowered == "mlp":
+            words.append("MLP")
         else:
             words.append(word.capitalize())
     return " ".join(words)
@@ -85,6 +102,9 @@ def metric_label(name: str) -> str:
 
     cleaned = re.sub(r"^metric_\d+_", "", name)
     cleaned = re.sub(r"^comparison_", "", cleaned)
+    cleaned = cleaned.replace("H_true", "true_belief_entropy")
+    cleaned = cleaned.replace("H_pred", "decoded_belief_entropy")
+    cleaned = re.sub(r"(?<![A-Za-z0-9])JS(?![A-Za-z0-9])", "jensen_shannon", cleaned)
     return normalize_token(cleaned)
 
 
@@ -101,6 +121,190 @@ def coerce_numeric_series(series: pd.Series) -> pd.Series:
     valid_numeric = text.str.match(r"^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$")
     text = text.where(valid_numeric)
     return pd.to_numeric(text, errors="coerce")
+
+
+METRIC_TOKEN_PATTERNS = {
+    "KL": re.compile(r"(?<![A-Za-z0-9])KL(?![A-Za-z0-9])"),
+    "CE": re.compile(r"(?<![A-Za-z0-9])CE(?![A-Za-z0-9])"),
+    "kl": re.compile(r"(?<![A-Za-z0-9])kl(?![A-Za-z0-9])"),
+    "ce": re.compile(r"(?<![A-Za-z0-9])ce(?![A-Za-z0-9])"),
+}
+
+
+def replace_metric_token(name: str, old_token: str, new_token: str) -> str | None:
+    pattern = METRIC_TOKEN_PATTERNS.get(old_token)
+    if pattern is None or not pattern.search(name):
+        return None
+    return pattern.sub(new_token, name, count=1)
+
+
+def candidate_ce_columns(kl_col: str) -> list[str]:
+    candidates = []
+    for old, new in (("KL", "CE"), ("kl", "ce")):
+        candidate = replace_metric_token(kl_col, old, new)
+        if candidate is not None:
+            candidates.append(candidate)
+    return candidates
+
+
+def metric_slot_key(column_name: str, *, tokens_to_remove: tuple[str, ...]) -> str:
+    key = column_name.lower()
+    for token in tokens_to_remove:
+        key = re.sub(rf"(?<![a-z0-9]){re.escape(token.lower())}(?![a-z0-9])", "", key)
+    key = re.sub(r"(?<![a-z0-9])(linear|mlp)(?![a-z0-9])", "", key)
+    key = re.sub(r"[_/.-]+", "_", key).strip("_")
+    return key or "default"
+
+
+def entropy_slot_key(column_name: str) -> str:
+    return metric_slot_key(column_name, tokens_to_remove=("KL", "CE", "kl", "ce"))
+
+
+def true_entropy_slot_key(column_name: str) -> str:
+    return metric_slot_key(column_name, tokens_to_remove=("h_true", "true_entropy"))
+
+
+def metric_variant(column_name: str) -> str:
+    lowered = column_name.lower()
+    if "linear" in lowered:
+        return "linear"
+    if "mlp" in lowered:
+        return "mlp"
+    return "legacy"
+
+
+def safe_divide(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    numerator = coerce_numeric_series(numerator)
+    denominator = coerce_numeric_series(denominator)
+    out = numerator / denominator
+    bad = denominator.abs() <= DERIVED_METRIC_EPSILON
+    return out.mask(bad)
+
+
+def add_derived_metric(df: pd.DataFrame, column_name: str, series: pd.Series) -> None:
+    if column_name in df.columns:
+        return
+    df[column_name] = series
+
+
+def report_entropy_differences(
+    df: pd.DataFrame,
+    entropy_by_variant: dict[str, dict[str, str]],
+    source_name: str,
+) -> None:
+    linear = entropy_by_variant.get("linear", {})
+    mlp = entropy_by_variant.get("mlp", {})
+    shared_slots = sorted(set(linear) & set(mlp))
+    for slot in shared_slots:
+        linear_series = coerce_numeric_series(df[linear[slot]])
+        mlp_series = coerce_numeric_series(df[mlp[slot]])
+        diff = (linear_series - mlp_series).abs().dropna()
+        if diff.empty:
+            continue
+        print(
+            f"[derived-metrics] {source_name}: entropy difference "
+            f"(linear vs mlp, slot={slot}) mean={diff.mean():.6g}, max={diff.max():.6g}",
+            flush=True,
+        )
+
+
+def add_normalized_mi_columns(
+    df: pd.DataFrame,
+    mi_columns: list[str],
+    entropy_by_variant: dict[str, dict[str, str]],
+) -> None:
+    mlp_entropy = entropy_by_variant.get("mlp", {})
+    if not mi_columns or not mlp_entropy:
+        return
+
+    preferred_slots = [slot for slot in mlp_entropy if "train" not in slot]
+    if not preferred_slots:
+        preferred_slots = list(mlp_entropy.keys())
+
+    for mi_col in mi_columns:
+        if len(preferred_slots) == 1:
+            slot = preferred_slots[0]
+            entropy_col = mlp_entropy[slot]
+            normalized_name = (
+                "normalized_MI"
+                if mi_col == "MI"
+                else f"{mi_col}_normalized_by_mlp_entropy"
+            )
+            if mi_col == "MI":
+                alias_name = "MI_normalized_by_mlp_entropy"
+            else:
+                alias_name = None
+            normalized = safe_divide(df[mi_col], df[entropy_col])
+            add_derived_metric(df, normalized_name, normalized)
+            if alias_name is not None:
+                add_derived_metric(df, alias_name, normalized)
+            continue
+
+        for slot in preferred_slots:
+            entropy_col = mlp_entropy[slot]
+            normalized_name = f"{mi_col}_normalized_by_mlp_entropy_{slot}"
+            add_derived_metric(df, normalized_name, safe_divide(df[mi_col], df[entropy_col]))
+
+
+def explicit_true_entropy_columns(df: pd.DataFrame) -> dict[str, dict[str, str]]:
+    entropy_by_variant: dict[str, dict[str, str]] = {
+        "linear": {},
+        "mlp": {},
+        "legacy": {},
+    }
+    for col in df.columns:
+        lowered = col.lower()
+        if "h_true" not in lowered and "true_entropy" not in lowered:
+            continue
+        entropy_by_variant[metric_variant(col)][true_entropy_slot_key(col)] = col
+    return entropy_by_variant
+
+
+def fallback_entropy_column_name(kl_col: str) -> str | None:
+    return (
+        replace_metric_token(kl_col, "KL", "entropy")
+        or replace_metric_token(kl_col, "kl", "entropy")
+    )
+
+
+def normalized_ce_column_name(ce_col: str) -> str | None:
+    return (
+        replace_metric_token(ce_col, "CE", "normalized_CE")
+        or replace_metric_token(ce_col, "ce", "normalized_ce")
+    )
+
+
+def augment_derived_metrics(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
+    df = df.copy()
+    entropy_by_variant = explicit_true_entropy_columns(df)
+    mi_columns = [col for col in df.columns if col in {"MI", "mi"}]
+
+    for kl_col in list(df.columns):
+        ce_col = next((candidate for candidate in candidate_ce_columns(kl_col) if candidate in df.columns), None)
+        if ce_col is None:
+            continue
+
+        variant = metric_variant(kl_col)
+        slot = entropy_slot_key(kl_col)
+        entropy_col = entropy_by_variant.get(variant, {}).get(slot)
+        normalized_ce_col = normalized_ce_column_name(ce_col)
+        if normalized_ce_col is None:
+            continue
+
+        if entropy_col is None:
+            entropy_col = fallback_entropy_column_name(kl_col)
+            if entropy_col is None:
+                continue
+            entropy = coerce_numeric_series(df[ce_col]) - coerce_numeric_series(df[kl_col])
+            entropy = entropy.clip(lower=DERIVED_METRIC_EPSILON)
+            add_derived_metric(df, entropy_col, entropy)
+            entropy_by_variant[variant].setdefault(slot, entropy_col)
+
+        add_derived_metric(df, normalized_ce_col, safe_divide(df[ce_col], df[entropy_col]))
+
+    report_entropy_differences(df, entropy_by_variant, source_name)
+    add_normalized_mi_columns(df, mi_columns, entropy_by_variant)
+    return df
 
 
 def csv_context(csv_path: Path, run_root: Path) -> dict:
@@ -257,7 +461,7 @@ def plot_csv_metrics(
         )
         return
 
-    df = pd.read_csv(csv_path)
+    df = augment_derived_metrics(pd.read_csv(csv_path), str(csv_path.relative_to(run_root)))
     if df.empty:
         return
 
@@ -318,7 +522,15 @@ def plot_protocol_workbook(
         return
 
     context = workbook_context(xlsx_path, run_root)
-    example = pd.read_excel(workbook, sheet_name=workbook.sheet_names[0])
+    workbook_rel = str(xlsx_path.relative_to(run_root))
+    sheets = {
+        sheet: augment_derived_metrics(
+            pd.read_excel(workbook, sheet_name=sheet),
+            f"{workbook_rel}::{sheet}",
+        )
+        for sheet in workbook.sheet_names
+    }
+    example = sheets[workbook.sheet_names[0]]
     id_cols = {"variant", "task_name", "task_value"}
     metric_cols = [c for c in example.columns if c not in id_cols]
     if not metric_cols:
@@ -333,23 +545,28 @@ def plot_protocol_workbook(
         plotted = False
 
         for sheet in workbook.sheet_names:
-            df = pd.read_excel(workbook, sheet_name=sheet)
+            df = sheets[sheet]
             if metric not in df.columns or "task_value" not in df.columns:
                 continue
 
             base_df = df[df["task_name"] == "base"] if "task_name" in df.columns else pd.DataFrame()
             var_df = df[df["task_name"] != "base"].copy() if "task_name" in df.columns else df.copy()
+            sheet_color = None
             if not var_df.empty and "task_value" in var_df.columns:
                 var_df["task_value"] = coerce_numeric_series(var_df["task_value"])
                 var_df[metric] = coerce_numeric_series(var_df[metric])
                 var_df = var_df.dropna(subset=["task_value", metric]).sort_values("task_value")
                 if not var_df.empty:
-                    ax.plot(
+                    line = ax.plot(
                         var_df["task_value"],
                         var_df[metric],
                         marker="o",
                         label=f"Episode {sheet.split('_')[-1]}",
                     )
+                    try:
+                        sheet_color = line[0].get_color()
+                    except Exception:
+                        sheet_color = None
                     plotted = True
 
             if not base_df.empty:
@@ -364,7 +581,10 @@ def plot_protocol_workbook(
                         base_x = min_x - gap
                     else:
                         base_x = 0.0
-                    ax.scatter(base_x, float(base_y.iloc[0]), marker="x", s=80, color="black")
+                    color = sheet_color
+                    if color is None:
+                        color = "black"
+                    ax.scatter(base_x, float(base_y.iloc[0]), marker="x", s=80, color=color)
                     plotted = True
 
         if not plotted:

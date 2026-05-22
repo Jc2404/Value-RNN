@@ -1,21 +1,21 @@
 {
-  "run_name": "tiger_1--p0.85",
+  "run_name": "Starkweather-p0.1",
   "output_root": "runs",
   "train": {
     "enabled": true,
-    "name": "tiger_agent_p_0.85",
+    "name": "Starkweather-agent-p0.1",
     "args": [
       "--eval-period", "5",
       "--num-rollouts", "50",
-      "--num-episodes", "1601",
+      "--num-episodes", "201",
       "--batch-size", "32",
       "--learning-rate", "0.001",
       "--num-gradient-steps", "10",
       "--target-period", "10",
       "--epsilon", "0.2",
       "--buffer-capacity", "8192",
-      "tiger",
-      "--listen-accuracy", "0.85"
+      "starkweather",
+      "--p_omission", "0.1"
     ]
   },
   "decoder_train": {
@@ -24,8 +24,8 @@
     "args": [
       "--run_regression",
       "--run_softmax_belief",
-      "--period", "250",
-      "--end_episode", "1600",
+      "--period", "20",
+      "--end_episode", "200",
       "--probe_num_samples", "10000",
       "--probe_valid_size", "0.2",
       "--probe_epochs", "300",
@@ -35,36 +35,14 @@
       "--belief_loss", "kl"
     ]
   },
-  "mi_train": {
-    "enabled": true,
-    "name": "mine_probe",
-    "mine_id": "mine_probe",
-    "args": [
-      "--agent_episode_start", "0",
-      "--agent_episode_end", "1600",
-      "--agent_episode_step", "250",
-      "--mine_num_samples", "10000",
-      "--mine_num_layers", "2",
-      "--mine_hidden_size", "256",
-      "--mine_alpha", "0.01",
-      "--mine_num_epochs", "200",
-      "--mine_batch_size", "1024",
-      "--mine_learning_rate", "0.001",
-      "--valid_size", "0.2",
-      "--use_wandb",
-      "--eval_after_train"
-    ]
-  },
   "protocol_a": {
     "enabled": true,
     "name": "protocolA",
     "args": [
-      "--run_mi",
-      "--run_regression",
       "--run_softmax_linear_probe",
       "--run_softmax_mlp_probe",
-      "--period", "400",
-      "--end_episode", "1600",
+      "--period", "40",
+      "--end_episode", "200",
       "--probe_num_samples", "10000",
       "--probe_valid_size", "0.2",
       "--probe_epochs", "300",
@@ -77,12 +55,8 @@
     ],
     "tests": [
       {
-        "label": "listen_accuracy",
-        "flag": "--test_listen_accuracy"
-      },
-      {
-        "label": "reward_listen",
-        "flag": "--test_reward_listen"
+        "label": "test_p_omission",
+        "flag": "--test_p_omission"
       }
     ]
   },
@@ -90,14 +64,11 @@
     "enabled": true,
     "name": "protocolB",
     "args": [
-      "--run_mi",
-      "--run_regression",
       "--run_softmax_linear_probe",
       "--run_softmax_mlp_probe",
-      "--run_belief_eval",
       "--num_samples", "10000",
-      "--period", "400",
-      "--end_episode", "1600",
+      "--period", "40",
+      "--end_episode", "200",
       "--belief_total_steps", "4000",
       "--valid_size", "0.2",
       "--probe_epochs", "300",
@@ -109,12 +80,8 @@
     ],
     "tests": [
       {
-        "label": "listen_accuracy",
-        "flag": "--test_listen_accuracy"
-      },
-      {
-        "label": "reward_listen",
-        "flag": "--test_reward_listen"
+        "label": "test_p_omission",
+        "flag": "--test_p_omission"
       }
     ]
   }

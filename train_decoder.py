@@ -179,17 +179,23 @@ def train_softmax_kl_probe(
         state = {"probe": probe, "mean": mean, "std": std, "standardize": args.probe_standardize}
         probe.eval()
         with torch.no_grad():
-            kl_tr, ce_tr = eval_belief_kl_probe(Xtr, Ytr, state)
-            kl_va, ce_va = eval_belief_kl_probe(Xva, Yva, state)
+            train_metrics = eval_belief_kl_probe(Xtr, Ytr, state)
+            valid_metrics = eval_belief_kl_probe(Xva, Yva, state)
 
         final_metrics = {
             "agent_episode": episode,
             "checkpoint_episode": episode,
             "epoch": ep_i,
-            f"softmax/KL_train_b{part_idx}": kl_tr,
-            f"softmax/KL_eval_b{part_idx}": kl_va,
-            f"softmax/CE_train_b{part_idx}": ce_tr,
-            f"softmax/CE_eval_b{part_idx}": ce_va,
+            f"softmax/KL_train_b{part_idx}": train_metrics["kl"],
+            f"softmax/KL_eval_b{part_idx}": valid_metrics["kl"],
+            f"softmax/CE_train_b{part_idx}": train_metrics["ce"],
+            f"softmax/CE_eval_b{part_idx}": valid_metrics["ce"],
+            f"softmax/H_true_train_b{part_idx}": train_metrics["true_entropy"],
+            f"softmax/H_true_eval_b{part_idx}": valid_metrics["true_entropy"],
+            f"softmax/H_pred_train_b{part_idx}": train_metrics["pred_entropy"],
+            f"softmax/H_pred_eval_b{part_idx}": valid_metrics["pred_entropy"],
+            f"softmax/JS_train_b{part_idx}": train_metrics["js"],
+            f"softmax/JS_eval_b{part_idx}": valid_metrics["js"],
             f"softmax/loss_train_{args.belief_loss}_b{part_idx}": running / max(seen, 1),
         }
     return {

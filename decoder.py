@@ -16,6 +16,8 @@ from environments.tiger import Tiger
 from environments.tmaze import TMaze
 from utils import generate_hiddens_and_beliefs, get_run_statistic
 
+BELIEF_METRIC_EPS = 1e-12
+
 
 class SoftmaxProbe(nn.Module):
     """Linear softmax probe that outputs log-probabilities."""
@@ -217,12 +219,23 @@ def eval_softmax_probe(X, Y, state):
 
     log_probs = probe(Xn)
     probs = log_probs.exp()
+    mix_probs = 0.5 * (Y + probs)
+    mix_log_probs = mix_probs.clamp_min(BELIEF_METRIC_EPS).log()
     kl = F.kl_div(log_probs, Y, reduction="batchmean").item()
     ce = -(Y * log_probs).sum(dim=-1).mean().item()
+    true_entropy = -(Y * Y.clamp_min(BELIEF_METRIC_EPS).log()).sum(dim=-1).mean().item()
+    pred_entropy = -(probs * log_probs).sum(dim=-1).mean().item()
+    js = 0.5 * (
+        F.kl_div(mix_log_probs, Y, reduction="batchmean")
+        + F.kl_div(mix_log_probs, probs, reduction="batchmean")
+    ).item()
 
     return {
         "kl": kl,
         "ce": ce,
+        "true_entropy": true_entropy,
+        "pred_entropy": pred_entropy,
+        "js": js,
         "probs": probs,
         "log_probs": log_probs,
     }
@@ -501,12 +514,19 @@ def main(args):
                         f"probe_softmax/eval_kl-{part_idx}": eval_metrics["kl"],
                         f"probe_softmax/train_ce-{part_idx}": train_metrics["ce"],
                         f"probe_softmax/eval_ce-{part_idx}": eval_metrics["ce"],
+                        f"probe_softmax/train_h_true-{part_idx}": train_metrics["true_entropy"],
+                        f"probe_softmax/eval_h_true-{part_idx}": eval_metrics["true_entropy"],
+                        f"probe_softmax/train_h_pred-{part_idx}": train_metrics["pred_entropy"],
+                        f"probe_softmax/eval_h_pred-{part_idx}": eval_metrics["pred_entropy"],
+                        f"probe_softmax/train_js-{part_idx}": train_metrics["js"],
+                        f"probe_softmax/eval_js-{part_idx}": eval_metrics["js"],
                     }
                 )
                 print(
                     f"[episode {episode}] belief {part_idx} {('mlp' if args.use_MLP else 'softmax')}: "
                     f"train_KL={train_metrics['kl']:.4f}, eval_KL={eval_metrics['kl']:.4f}, "
-                    f"train_CE={train_metrics['ce']:.4f}, eval_CE={eval_metrics['ce']:.4f}"
+                    f"train_CE={train_metrics['ce']:.4f}, eval_CE={eval_metrics['ce']:.4f}, "
+                    f"train_JS={train_metrics['js']:.4f}, eval_JS={eval_metrics['js']:.4f}"
                 )
 
     wandb.finish()

@@ -29,6 +29,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn import preprocessing
 from scipy.special import softmax
 
+BELIEF_METRIC_EPS = 1e-12
+
 
 def select_device():
     return torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -301,6 +303,31 @@ def belief_probe_loss(log_probs, targets, loss_type="kl"):
     raise ValueError(f"Unknown belief loss: {loss_type}")
 
 
+def compute_belief_metrics(target_probs, pred_log_probs):
+    pred_probs = pred_log_probs.exp()
+    mix_probs = 0.5 * (target_probs + pred_probs)
+    mix_log_probs = mix_probs.clamp_min(BELIEF_METRIC_EPS).log()
+
+    kl = F.kl_div(pred_log_probs, target_probs, reduction="batchmean").item()
+    ce = -(target_probs * pred_log_probs).sum(dim=-1).mean().item()
+    true_entropy = -(target_probs * target_probs.clamp_min(BELIEF_METRIC_EPS).log()).sum(dim=-1).mean().item()
+    pred_entropy = -(pred_probs * pred_log_probs).sum(dim=-1).mean().item()
+    js = 0.5 * (
+        F.kl_div(mix_log_probs, target_probs, reduction="batchmean")
+        + F.kl_div(mix_log_probs, pred_probs, reduction="batchmean")
+    ).item()
+
+    return {
+        "kl": kl,
+        "ce": ce,
+        "true_entropy": true_entropy,
+        "pred_entropy": pred_entropy,
+        "js": js,
+        "probs": pred_probs,
+        "log_probs": pred_log_probs,
+    }
+
+
 def resolve_softmax_probe_specs(args):
     specs = []
     explicit = False
@@ -364,9 +391,7 @@ def eval_belief_kl_probe(X, Y, state):
     if state["standardize"]:
         X = (X - state["mean"]) / state["std"]
     logp = state["probe"](X)
-    kl = F.kl_div(logp, Y, reduction="batchmean").item()
-    ce = -(Y * logp).sum(dim=-1).mean().item()
-    return kl, ce
+    return compute_belief_metrics(Y, logp)
 
 
 # State decoder
@@ -598,6 +623,9 @@ def main(args):
         kl_probes = None
         kl_base = {}
         ce_base = {}
+        true_entropy_base = {}
+        pred_entropy_base = {}
+        js_base = {}
         if softmax_specs:
             Xtr, Xte, Btr, Bte = shuffle_split_torch(
                 base_h_belief, base_beliefs, args.probe_valid_size, device
@@ -609,23 +637,41 @@ def main(args):
                 spec_name = spec["name"]
                 for part_idx, (Ytr, Yte) in enumerate(zip(Btr, Bte)):
                     st = fit_belief_kl_probe(Xtr, Ytr, args, use_mlp_probe=spec["use_mlp"])
-                    kl, ce = eval_belief_kl_probe(Xte, Yte, st)
+                    metrics = eval_belief_kl_probe(Xte, Yte, st)
 
                     if spec["legacy_names"]:
                         kl_key = f"KL_b{part_idx}"
                         ce_key = f"CE_b{part_idx}"
+                        true_entropy_key = f"H_true_b{part_idx}"
+                        pred_entropy_key = f"H_pred_b{part_idx}"
+                        js_key = f"JS_b{part_idx}"
                         log_kl_key = f"belief_softmax/base_KL_b{part_idx}"
                         log_ce_key = f"belief_softmax/base_CE_b{part_idx}"
+                        log_true_entropy_key = f"belief_softmax/base_H_true_b{part_idx}"
+                        log_pred_entropy_key = f"belief_softmax/base_H_pred_b{part_idx}"
+                        log_js_key = f"belief_softmax/base_JS_b{part_idx}"
                     else:
                         kl_key = f"KL_{spec_name}_b{part_idx}"
                         ce_key = f"CE_{spec_name}_b{part_idx}"
+                        true_entropy_key = f"H_true_{spec_name}_b{part_idx}"
+                        pred_entropy_key = f"H_pred_{spec_name}_b{part_idx}"
+                        js_key = f"JS_{spec_name}_b{part_idx}"
                         log_kl_key = f"belief_softmax/{spec_name}/base_KL_b{part_idx}"
                         log_ce_key = f"belief_softmax/{spec_name}/base_CE_b{part_idx}"
+                        log_true_entropy_key = f"belief_softmax/{spec_name}/base_H_true_b{part_idx}"
+                        log_pred_entropy_key = f"belief_softmax/{spec_name}/base_H_pred_b{part_idx}"
+                        log_js_key = f"belief_softmax/{spec_name}/base_JS_b{part_idx}"
 
-                    kl_base[kl_key] = kl
-                    ce_base[ce_key] = ce
-                    softmax_log[log_kl_key] = kl
-                    softmax_log[log_ce_key] = ce
+                    kl_base[kl_key] = metrics["kl"]
+                    ce_base[ce_key] = metrics["ce"]
+                    true_entropy_base[true_entropy_key] = metrics["true_entropy"]
+                    pred_entropy_base[pred_entropy_key] = metrics["pred_entropy"]
+                    js_base[js_key] = metrics["js"]
+                    softmax_log[log_kl_key] = metrics["kl"]
+                    softmax_log[log_ce_key] = metrics["ce"]
+                    softmax_log[log_true_entropy_key] = metrics["true_entropy"]
+                    softmax_log[log_pred_entropy_key] = metrics["pred_entropy"]
+                    softmax_log[log_js_key] = metrics["js"]
                     probes_for_spec.append(st)
                 kl_probes[spec_name] = probes_for_spec
             wandb.log(softmax_log, step=episode)
@@ -665,6 +711,9 @@ def main(args):
         if softmax_specs:
             base_row.update(kl_base)
             base_row.update(ce_base)
+            base_row.update(true_entropy_base)
+            base_row.update(pred_entropy_base)
+            base_row.update(js_base)
         if args.run_state_decoder:
             base_row.update(state_base)
         episode_rows[episode].append(base_row)
@@ -727,20 +776,35 @@ def main(args):
                 for spec in softmax_specs:
                     spec_name = spec["name"]
                     for part_idx, (bp, st) in enumerate(zip(bv, kl_probes[spec_name])):
-                        kl, ce = eval_belief_kl_probe(hv, bp, st)
+                        metrics = eval_belief_kl_probe(hv, bp, st)
                         if spec["legacy_names"]:
-                            row[f"KL_b{part_idx}"] = kl
-                            row[f"CE_b{part_idx}"] = ce
+                            row[f"KL_b{part_idx}"] = metrics["kl"]
+                            row[f"CE_b{part_idx}"] = metrics["ce"]
+                            row[f"H_true_b{part_idx}"] = metrics["true_entropy"]
+                            row[f"H_pred_b{part_idx}"] = metrics["pred_entropy"]
+                            row[f"JS_b{part_idx}"] = metrics["js"]
                             log_kl_key = f"belief_softmax/frozen_base_KL_b{part_idx}__{vname}"
                             log_ce_key = f"belief_softmax/frozen_base_CE_b{part_idx}__{vname}"
+                            log_true_entropy_key = f"belief_softmax/frozen_base_H_true_b{part_idx}__{vname}"
+                            log_pred_entropy_key = f"belief_softmax/frozen_base_H_pred_b{part_idx}__{vname}"
+                            log_js_key = f"belief_softmax/frozen_base_JS_b{part_idx}__{vname}"
                         else:
-                            row[f"KL_{spec_name}_b{part_idx}"] = kl
-                            row[f"CE_{spec_name}_b{part_idx}"] = ce
+                            row[f"KL_{spec_name}_b{part_idx}"] = metrics["kl"]
+                            row[f"CE_{spec_name}_b{part_idx}"] = metrics["ce"]
+                            row[f"H_true_{spec_name}_b{part_idx}"] = metrics["true_entropy"]
+                            row[f"H_pred_{spec_name}_b{part_idx}"] = metrics["pred_entropy"]
+                            row[f"JS_{spec_name}_b{part_idx}"] = metrics["js"]
                             log_kl_key = f"belief_softmax/{spec_name}/frozen_base_KL_b{part_idx}__{vname}"
                             log_ce_key = f"belief_softmax/{spec_name}/frozen_base_CE_b{part_idx}__{vname}"
+                            log_true_entropy_key = f"belief_softmax/{spec_name}/frozen_base_H_true_b{part_idx}__{vname}"
+                            log_pred_entropy_key = f"belief_softmax/{spec_name}/frozen_base_H_pred_b{part_idx}__{vname}"
+                            log_js_key = f"belief_softmax/{spec_name}/frozen_base_JS_b{part_idx}__{vname}"
 
-                        softmax_log[log_kl_key] = kl
-                        softmax_log[log_ce_key] = ce
+                        softmax_log[log_kl_key] = metrics["kl"]
+                        softmax_log[log_ce_key] = metrics["ce"]
+                        softmax_log[log_true_entropy_key] = metrics["true_entropy"]
+                        softmax_log[log_pred_entropy_key] = metrics["pred_entropy"]
+                        softmax_log[log_js_key] = metrics["js"]
                 wandb.log(softmax_log, step=episode)
 
             # State decoder

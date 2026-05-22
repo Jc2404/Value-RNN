@@ -37,6 +37,8 @@ from utils import (
     get_run_statistic,
 )
 
+BELIEF_METRIC_EPS = 1e-12
+
 
 # -----------------------------
 # Device + env helpers
@@ -413,6 +415,31 @@ def softmax_probe_loss(log_probs, targets, loss_type="kl"):
     raise ValueError(f"Unknown belief loss: {loss_type}")
 
 
+def compute_belief_metrics(target_probs, pred_log_probs):
+    pred_probs = pred_log_probs.exp()
+    mix_probs = 0.5 * (target_probs + pred_probs)
+    mix_log_probs = mix_probs.clamp_min(BELIEF_METRIC_EPS).log()
+
+    kl = F.kl_div(pred_log_probs, target_probs, reduction="batchmean").item()
+    ce = -(target_probs * pred_log_probs).sum(dim=-1).mean().item()
+    true_entropy = -(target_probs * target_probs.clamp_min(BELIEF_METRIC_EPS).log()).sum(dim=-1).mean().item()
+    pred_entropy = -(pred_probs * pred_log_probs).sum(dim=-1).mean().item()
+    js = 0.5 * (
+        F.kl_div(mix_log_probs, target_probs, reduction="batchmean")
+        + F.kl_div(mix_log_probs, pred_probs, reduction="batchmean")
+    ).item()
+
+    return {
+        "kl": kl,
+        "ce": ce,
+        "true_entropy": true_entropy,
+        "pred_entropy": pred_entropy,
+        "js": js,
+        "probs": pred_probs,
+        "log_probs": pred_log_probs,
+    }
+
+
 def resolve_softmax_probe_specs(args):
     specs = []
 
@@ -475,12 +502,7 @@ def eval_softmax_probe_torch(X, Y, state, standardize=True):
         Xn = X
 
     log_probs = probe(Xn)
-    probs = log_probs.exp()
-
-    kl = F.kl_div(log_probs, Y, reduction="batchmean").item()
-    ce = -(Y * log_probs).sum(dim=-1).mean().item()
-
-    return {"kl": kl, "ce": ce, "probs": probs}
+    return compute_belief_metrics(Y, log_probs)
 
 
 # -----------------------------
@@ -854,27 +876,54 @@ def main(args):
                             if part_idx == 0:
                                 log_kl = f"softmax/{spec_name}/KL"
                                 log_ce = f"softmax/{spec_name}/CE"
+                                log_h_true = f"softmax/{spec_name}/H_true"
+                                log_h_pred = f"softmax/{spec_name}/H_pred"
+                                log_js = f"softmax/{spec_name}/JS"
                                 log_kl_tr = f"softmax/{spec_name}/KL_train"
                                 log_ce_tr = f"softmax/{spec_name}/CE_train"
+                                log_h_true_tr = f"softmax/{spec_name}/H_true_train"
+                                log_h_pred_tr = f"softmax/{spec_name}/H_pred_train"
+                                log_js_tr = f"softmax/{spec_name}/JS_train"
                                 row_kl = f"softmax_{spec_name}_KL"
                                 row_ce = f"softmax_{spec_name}_CE"
+                                row_h_true = f"softmax_{spec_name}_H_true"
+                                row_h_pred = f"softmax_{spec_name}_H_pred"
+                                row_js = f"softmax_{spec_name}_JS"
                             else:
                                 log_kl = f"softmax/{spec_name}/KL-{part_idx}"
                                 log_ce = f"softmax/{spec_name}/CE-{part_idx}"
+                                log_h_true = f"softmax/{spec_name}/H_true-{part_idx}"
+                                log_h_pred = f"softmax/{spec_name}/H_pred-{part_idx}"
+                                log_js = f"softmax/{spec_name}/JS-{part_idx}"
                                 log_kl_tr = f"softmax/{spec_name}/KL_train-{part_idx}"
                                 log_ce_tr = f"softmax/{spec_name}/CE_train-{part_idx}"
+                                log_h_true_tr = f"softmax/{spec_name}/H_true_train-{part_idx}"
+                                log_h_pred_tr = f"softmax/{spec_name}/H_pred_train-{part_idx}"
+                                log_js_tr = f"softmax/{spec_name}/JS_train-{part_idx}"
                                 row_kl = f"softmax_{spec_name}_KL-{part_idx}"
                                 row_ce = f"softmax_{spec_name}_CE-{part_idx}"
+                                row_h_true = f"softmax_{spec_name}_H_true-{part_idx}"
+                                row_h_pred = f"softmax_{spec_name}_H_pred-{part_idx}"
+                                row_js = f"softmax_{spec_name}_JS-{part_idx}"
 
                             softmax_log[log_kl] = res_te["kl"]
                             softmax_log[log_ce] = res_te["ce"]
+                            softmax_log[log_h_true] = res_te["true_entropy"]
+                            softmax_log[log_h_pred] = res_te["pred_entropy"]
+                            softmax_log[log_js] = res_te["js"]
                             softmax_log[log_kl_tr] = res_tr["kl"]
                             softmax_log[log_ce_tr] = res_tr["ce"]
+                            softmax_log[log_h_true_tr] = res_tr["true_entropy"]
+                            softmax_log[log_h_pred_tr] = res_tr["pred_entropy"]
+                            softmax_log[log_js_tr] = res_tr["js"]
                             add_row(row_kl, res_te["kl"])
                             add_row(row_ce, res_te["ce"])
+                            add_row(row_h_true, res_te["true_entropy"])
+                            add_row(row_h_pred, res_te["pred_entropy"])
+                            add_row(row_js, res_te["js"])
                             print(
                                 f"[episode {episode}] {vname} softmax '{spec_name}' part {part_idx + 1}/{len(Btr)} done: "
-                                f"valid_kl={res_te['kl']:.6f}, valid_ce={res_te['ce']:.6f}",
+                                f"valid_kl={res_te['kl']:.6f}, valid_ce={res_te['ce']:.6f}, valid_js={res_te['js']:.6f}",
                                 flush=True,
                             )
                     wandb.log(softmax_log)
