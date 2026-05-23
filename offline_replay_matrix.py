@@ -17,8 +17,8 @@ def build_parser():
     parser.add_argument("--name", type=str, default=None)
     parser.add_argument("--weights_dir", type=str, default="weights")
     parser.add_argument("--report_dir", type=str, default="report")
-    parser.add_argument("--cache_dir", type=str, default=None)
-    parser.add_argument("--artifact_dir", type=str, default=None)
+    parser.add_argument("--cache_dir", type=str, default="cache")
+    parser.add_argument("--artifact_dir", type=str, default="cache/artifact")
     parser.add_argument("--checkpoint_episodes", type=int, nargs="+", required=True)
     parser.add_argument("--num_samples", type=int, default=10000,
                         help="Target number of cached decision timesteps per generator checkpoint / variant.")
