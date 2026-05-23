@@ -530,9 +530,14 @@ def plot_protocol_workbook(
         )
         for sheet in workbook.sheet_names
     }
-    example = sheets[workbook.sheet_names[0]]
     id_cols = {"variant", "task_name", "task_value"}
-    metric_cols = [c for c in example.columns if c not in id_cols]
+    metric_cols = []
+    for sheet in workbook.sheet_names:
+        df = sheets[sheet]
+        for col in df.columns:
+            if col in id_cols or col in metric_cols:
+                continue
+            metric_cols.append(col)
     if not metric_cols:
         return
 

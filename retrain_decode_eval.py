@@ -186,7 +186,7 @@ def pick_variants(train_args, args):
                 variants.append((f"listen_accuracy={p}", {"listen_accuracy": p}))
             return variants
         if args.test_reward_listen:
-            for r in [-5, -2, -1.5, -1, -0.5, -0.1]:
+            for r in [-5, -3, -1, 0, 1]:
                 variants.append((f"reward_listen={r}", {"reward_listen": r}))
             return variants
         

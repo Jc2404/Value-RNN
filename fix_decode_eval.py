@@ -145,7 +145,7 @@ def pick_variants(train_args, args):
             grid = [0.55, 0.65, 0.75, 0.85, 0.95, 1.0]
             return [(f"tiger_listen_accuracy={a}", {"listen_accuracy": a}) for a in grid]
         if args.test_reward_listen:
-            grid = [-5, -2, 0, 2, 5]
+            grid = [-5, -3, -1, 0, 1]
             return [(f"tiger_reward_listen={r}", {"reward_listen": r}) for r in grid]
         
     elif env_name == "gridworld":
