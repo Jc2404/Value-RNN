@@ -1,4 +1,5 @@
 import json
+import math
 import re
 from argparse import ArgumentParser
 from pathlib import Path
@@ -31,8 +32,13 @@ SETUP_MARKERS = {
 }
 METRIC_LABELS = {
     "linreg_rsq-0": "Belief $R^2$",
-    "normalized_MI": "Normalized MI",
     "MI": "MI",
+    "softmax_linear_KL": "Linear probe KL divergence",
+    "softmax_linear_CE": "Linear probe cross-entropy",
+    "softmax_linear_JS": "Linear probe JS divergence",
+    "softmax_mlp_KL": "MLP probe KL divergence",
+    "softmax_mlp_CE": "MLP probe cross-entropy",
+    "softmax_mlp_JS": "MLP probe JS divergence",
     "comparison_rollout_mean_drqn_disc_return": "Discounted return",
 }
 TASK_LABELS = {
@@ -55,7 +61,6 @@ TASK_LABELS = {
 }
 HIGHER_IS_BETTER = {
     "linreg_rsq-0",
-    "normalized_MI",
     "MI",
     "comparison_rollout_mean_drqn_disc_return",
 }
@@ -100,7 +105,7 @@ def short_task_label(task_name: str) -> str:
 
 def stage_labels_for_count(count: int) -> list[str]:
     if count >= 3:
-        return ["Untrained", "Mid", "Trained"][:count]
+        return ["Untrained", "Intermediate", "Trained"][:count]
     if count == 2:
         return ["Early", "Late"]
     return ["Checkpoint"]
@@ -119,37 +124,8 @@ def coerce_numeric(series: pd.Series) -> pd.Series:
     return pd.to_numeric(text, errors="coerce")
 
 
-def add_normalized_mi(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    if "normalized_MI" in df.columns:
-        df["normalized_MI"] = coerce_numeric(df["normalized_MI"])
-        return df
-    if "MI" not in df.columns:
-        return df
-
-    entropy_candidates = [
-        "softmax_mlp_H_true",
-        "softmax_mlp_H_true-0",
-        "softmax_linear_H_true",
-        "softmax_linear_H_true-0",
-        "H_true_b0",
-    ]
-    entropy_col = next((col for col in entropy_candidates if col in df.columns), None)
-    if entropy_col is None:
-        return df
-
-    mi = coerce_numeric(df["MI"])
-    entropy = coerce_numeric(df[entropy_col])
-    valid = entropy.abs() > 1e-8
-    out = pd.Series(np.nan, index=df.index, dtype=float)
-    out.loc[valid] = mi.loc[valid] / entropy.loc[valid]
-    df["normalized_MI"] = out
-    return df
-
-
 def load_csv(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    return add_normalized_mi(df)
+    return pd.read_csv(path)
 
 
 def parse_episode_from_sheet(sheet_name: str) -> int | None:
@@ -174,7 +150,7 @@ def load_protocol_b_workbook(path: Path) -> pd.DataFrame:
         frames.append(frame)
     if not frames:
         return pd.DataFrame()
-    return add_normalized_mi(pd.concat(frames, ignore_index=True))
+    return pd.concat(frames, ignore_index=True)
 
 
 def find_summary(run_root: Path, relative_glob: str) -> Path | None:
@@ -219,6 +195,45 @@ def prepare_numeric_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFram
         df["task_value_num"] = numeric_task
         df["task_value_str"] = df["task_value"].astype(str).replace({"nan": "", "None": ""})
     return df
+
+
+def parse_base_task_value(raw_value: str | None):
+    if raw_value is None:
+        return None
+    text = str(raw_value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return text
+
+
+def baseline_mask(df: pd.DataFrame, base_task_value) -> pd.Series:
+    if df.empty:
+        return pd.Series(dtype=bool)
+
+    mask = pd.Series(False, index=df.index)
+    if "task_name" in df.columns:
+        mask = mask | (df["task_name"].astype(str) == "base")
+
+    if base_task_value is None or "task_value" not in df.columns:
+        return mask
+
+    if isinstance(base_task_value, float):
+        if "task_value_num" in df.columns:
+            numeric = coerce_numeric(df["task_value_num"])
+        else:
+            numeric = coerce_numeric(df["task_value"])
+        numeric_match = pd.Series(
+            np.isclose(numeric, float(base_task_value), atol=1e-8, rtol=1e-6),
+            index=df.index,
+        )
+        mask = mask | numeric_match
+    else:
+        string_values = df.get("task_value_str", df["task_value"].astype(str).str.strip())
+        mask = mask | (string_values.astype(str).str.strip() == str(base_task_value))
+    return mask
 
 
 def load_run_data(run_root: Path, report_root: Path, protocol_b_xlsx: list[str] | None,
@@ -330,7 +345,6 @@ def normalize_sources(data: dict) -> dict:
         "agent_episode",
         "task_value",
         "linreg_rsq-0",
-        "normalized_MI",
         "MI",
         "comparison_rollout_mean_drqn_disc_return",
     ]
@@ -397,24 +411,33 @@ def choose_representation_metrics(frames: list[pd.DataFrame]) -> list[str]:
     metrics = []
     if "linreg_rsq-0" in available:
         metrics.append("linreg_rsq-0")
-    if "normalized_MI" in available:
-        metrics.append("normalized_MI")
-    elif "MI" in available:
+    if "MI" in available:
         metrics.append("MI")
+    for metric in [
+        "softmax_linear_KL",
+        "softmax_linear_CE",
+        "softmax_linear_JS",
+        "softmax_mlp_KL",
+        "softmax_mlp_CE",
+        "softmax_mlp_JS",
+    ]:
+        if metric in available:
+            metrics.append(metric)
     return metrics
 
 
-def compute_degradation(df: pd.DataFrame, metric: str, *, group_cols: list[str]) -> pd.DataFrame:
+def compute_degradation(df: pd.DataFrame, metric: str, *, group_cols: list[str], base_task_value=None) -> pd.DataFrame:
     if df.empty or metric not in df.columns:
         return pd.DataFrame()
 
-    base = df[df["task_name"] == "base"][group_cols + [metric]].copy()
+    base_rows = baseline_mask(df, base_task_value)
+    base = df[base_rows][group_cols + [metric]].copy()
     if base.empty:
         return pd.DataFrame()
     base = base.groupby(group_cols, as_index=False)[metric].mean()
     base = base.rename(columns={metric: "base_value"})
 
-    var = df[df["task_name"] != "base"].copy()
+    var = df[~base_rows].copy()
     if var.empty:
         return pd.DataFrame()
 
@@ -429,10 +452,10 @@ def compute_degradation(df: pd.DataFrame, metric: str, *, group_cols: list[str])
     return merged
 
 
-def extract_base_rows(df: pd.DataFrame, metric: str) -> pd.DataFrame:
+def extract_base_rows(df: pd.DataFrame, metric: str, base_task_value=None) -> pd.DataFrame:
     if df.empty or metric not in df.columns:
         return pd.DataFrame()
-    out = df[df["task_name"] == "base"].copy()
+    out = df[baseline_mask(df, base_task_value)].copy()
     out["metric_value"] = coerce_numeric(out[metric])
     out["metric_name"] = metric
     return out
@@ -440,36 +463,26 @@ def extract_base_rows(df: pd.DataFrame, metric: str) -> pd.DataFrame:
 
 def plot_base_performance(rep_sources: dict[str, pd.DataFrame], control_df: pd.DataFrame,
                           stage_map: dict[int, str], family: str, output_dir: Path,
-                          rep_metrics: list[str], control_metric: str | None) -> None:
-    panels = []
+                          rep_metrics: list[str], control_metric: str | None, base_task_value=None) -> None:
     for metric in rep_metrics:
         rows = []
         for setup_name in SETUP_ORDER:
             frame = rep_sources.get(setup_name, pd.DataFrame())
             if frame.empty:
                 continue
-            base_rows = extract_base_rows(frame[frame["task_name"].isin([family, "base"])], metric)
+            base_rows = extract_base_rows(frame[frame["task_name"].isin([family, "base"])], metric, base_task_value)
             if base_rows.empty:
                 continue
             base_rows["setup"] = setup_name
             rows.append(base_rows)
-        if rows:
-            panels.append((metric, pd.concat(rows, ignore_index=True)))
+        if not rows:
+            continue
 
-    if control_metric is not None and not control_df.empty and control_metric in control_df.columns:
-        control_rows = extract_base_rows(control_df[control_df["task_name"].isin([family, "base"])], control_metric)
-        if not control_rows.empty:
-            control_rows["setup"] = "protocol_b_original"
-            panels.append((control_metric, control_rows))
+        data = pd.concat(rows, ignore_index=True)
+        fig, ax = plt.subplots(figsize=(6.4, 4.8))
+        stage_order = list(stage_map.keys())
+        stage_names = [stage_map[ep] for ep in stage_order]
 
-    if not panels:
-        return
-
-    fig, axes = plt.subplots(1, len(panels), figsize=(5.5 * len(panels), 4.8), squeeze=False)
-    stage_order = list(stage_map.keys())
-    stage_names = [stage_map[ep] for ep in stage_order]
-
-    for ax, (metric, data) in zip(axes[0], panels):
         for setup_name in SETUP_ORDER:
             if setup_name not in data["setup"].unique():
                 continue
@@ -488,19 +501,51 @@ def plot_base_performance(rep_sources: dict[str, pd.DataFrame], control_df: pd.D
                 color=SETUP_COLORS[setup_name],
                 label=SETUP_LABELS[setup_name],
             )
-        ax.set_title(short_metric_label(metric))
+
+        ax.set_title(f"Matched performance: {short_metric_label(metric)}")
         ax.set_xlabel("Training stage")
         ax.set_ylabel(short_metric_label(metric))
-        ax.tick_params(axis="x", rotation=0)
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            fig.legend(handles, labels, loc="upper center", ncol=min(len(labels), 3), bbox_to_anchor=(0.5, 1.02))
+        fig.tight_layout()
+        ensure_dir(output_dir)
+        fig.savefig(output_dir / f"{sanitize(family)}_matched_base_performance_{sanitize(metric)}.png")
+        plt.close(fig)
 
-    handles, labels = axes[0][0].get_legend_handles_labels()
-    if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=min(len(labels), 3), bbox_to_anchor=(0.5, 1.05))
-    fig.suptitle(f"Matched performance: {short_task_label(family)}", y=1.08)
-    fig.tight_layout()
-    ensure_dir(output_dir)
-    fig.savefig(output_dir / f"{sanitize(family)}_matched_base_performance.png")
-    plt.close(fig)
+    if control_metric is not None and not control_df.empty and control_metric in control_df.columns:
+        control_rows = extract_base_rows(
+            control_df[control_df["task_name"].isin([family, "base"])],
+            control_metric,
+            base_task_value,
+        )
+        if not control_rows.empty:
+            control_rows["setup"] = "protocol_b_original"
+            fig, ax = plt.subplots(figsize=(6.4, 4.8))
+            stage_order = list(stage_map.keys())
+            stage_names = [stage_map[ep] for ep in stage_order]
+            subset = control_rows.dropna(subset=["metric_value"]).copy()
+            values = []
+            for episode in stage_order:
+                stage_subset = subset[subset["evaluator_episode"].astype(int) == int(episode)]
+                values.append(stage_subset["metric_value"].mean() if not stage_subset.empty else np.nan)
+            ax.plot(
+                stage_names,
+                values,
+                marker=SETUP_MARKERS["protocol_b_original"],
+                color=SETUP_COLORS["protocol_b_original"],
+                label=SETUP_LABELS["protocol_b_original"],
+            )
+            ax.set_title(f"Matched performance: {short_metric_label(control_metric)}")
+            ax.set_xlabel("Training stage")
+            ax.set_ylabel(short_metric_label(control_metric))
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                fig.legend(handles, labels, loc="upper center", ncol=1, bbox_to_anchor=(0.5, 1.02))
+            fig.tight_layout()
+            ensure_dir(output_dir)
+            fig.savefig(output_dir / f"{sanitize(family)}_matched_base_performance_{sanitize(control_metric)}.png")
+            plt.close(fig)
 
 
 def is_numeric_sweep(data: pd.DataFrame) -> bool:
@@ -515,9 +560,67 @@ def categorical_order(data: pd.DataFrame) -> list[str]:
     return values
 
 
+def ordered_variant_rows(data: pd.DataFrame) -> list[tuple[str, str]]:
+    if data.empty:
+        return []
+    numeric = data[["variant", "task_value_num"]].drop_duplicates().dropna(subset=["task_value_num"]).sort_values("task_value_num")
+    ordered = [(str(row["variant"]), str(row["task_value_num"]).rstrip("0").rstrip(".") if "." in str(row["task_value_num"]) else str(row["task_value_num"])) for _, row in numeric.iterrows()]
+
+    seen = {variant for variant, _ in ordered}
+    categorical = data[["variant", "task_value_str"]].drop_duplicates()
+    for _, row in categorical.iterrows():
+        variant = str(row["variant"])
+        if variant in seen:
+            continue
+        value = str(row["task_value_str"]).strip()
+        if value:
+            ordered.append((variant, value))
+            seen.add(variant)
+    return ordered
+
+
+def draw_heatmap(ax, values: np.ndarray, stage_names: list[str], title: str, *,
+                 cmap: str, symmetric: bool) -> None:
+    finite = np.isfinite(values)
+    if finite.any():
+        if symmetric:
+            vmax = np.nanmax(np.abs(values[finite]))
+            vmax = max(vmax, 1e-6)
+            vmin = -vmax
+        else:
+            vmin = float(np.nanmin(values[finite]))
+            vmax = float(np.nanmax(values[finite]))
+            if math.isclose(vmin, vmax):
+                delta = max(abs(vmin) * 0.05, 1e-6)
+                vmin -= delta
+                vmax += delta
+    else:
+        vmin, vmax = (-1.0, 1.0) if symmetric else (0.0, 1.0)
+
+    image = ax.imshow(values, cmap=cmap, vmin=vmin, vmax=vmax, aspect="equal")
+    ax.set_xticks(range(len(stage_names)))
+    ax.set_yticks(range(len(stage_names)))
+    ax.set_xticklabels(stage_names, rotation=20)
+    ax.set_yticklabels(stage_names)
+    ax.set_xlabel("Generator stage")
+    ax.set_ylabel("Evaluator stage")
+    ax.set_title(title)
+
+    scale = max(abs(vmax), abs(vmin), 1e-9)
+    for row_idx in range(values.shape[0]):
+        for col_idx in range(values.shape[1]):
+            value = values[row_idx, col_idx]
+            if np.isnan(value):
+                continue
+            color = "white" if abs(value) > scale * 0.55 else "black"
+            ax.text(col_idx, row_idx, f"{value:.2f}", ha="center", va="center", color=color, fontsize=10)
+
+    return image
+
+
 def plot_mismatch_penalty_curves(rep_sources: dict[str, pd.DataFrame], control_df: pd.DataFrame,
                                  stage_map: dict[int, str], family: str, output_dir: Path,
-                                 rep_metrics: list[str], control_metric: str | None) -> None:
+                                 rep_metrics: list[str], control_metric: str | None, base_task_value=None) -> None:
     metric_frames = []
     for metric in rep_metrics:
         rows = []
@@ -529,6 +632,7 @@ def plot_mismatch_penalty_curves(rep_sources: dict[str, pd.DataFrame], control_d
                 frame[frame["task_name"].isin([family, "base"])],
                 metric,
                 group_cols=["setup", "evaluator_episode"],
+                base_task_value=base_task_value,
             )
             if not deg.empty:
                 rows.append(deg)
@@ -540,6 +644,7 @@ def plot_mismatch_penalty_curves(rep_sources: dict[str, pd.DataFrame], control_d
             control_df[control_df["task_name"].isin([family, "base"])],
             control_metric,
             group_cols=["setup", "evaluator_episode"],
+            base_task_value=base_task_value,
         )
         if not control_deg.empty:
             metric_frames.append((control_metric, control_deg))
@@ -611,8 +716,7 @@ def plot_mismatch_penalty_curves(rep_sources: dict[str, pd.DataFrame], control_d
 
 def plot_training_effect(rep_sources: dict[str, pd.DataFrame], control_df: pd.DataFrame,
                          stage_map: dict[int, str], family: str, output_dir: Path,
-                         rep_metrics: list[str], control_metric: str | None) -> None:
-    panels = []
+                         rep_metrics: list[str], control_metric: str | None, base_task_value=None) -> None:
     for metric in rep_metrics:
         rows = []
         for setup_name in SETUP_ORDER:
@@ -623,34 +727,21 @@ def plot_training_effect(rep_sources: dict[str, pd.DataFrame], control_df: pd.Da
                 frame[frame["task_name"].isin([family, "base"])],
                 metric,
                 group_cols=["setup", "evaluator_episode"],
+                base_task_value=base_task_value,
             )
             if deg.empty:
                 continue
             summary = deg.groupby(["setup", "evaluator_episode"], as_index=False)["degradation_vs_base"].mean()
             summary["metric_name"] = metric
             rows.append(summary)
-        if rows:
-            panels.append((metric, pd.concat(rows, ignore_index=True)))
+        if not rows:
+            continue
 
-    if control_metric is not None and not control_df.empty and control_metric in control_df.columns:
-        deg = compute_degradation(
-            control_df[control_df["task_name"].isin([family, "base"])],
-            control_metric,
-            group_cols=["setup", "evaluator_episode"],
-        )
-        if not deg.empty:
-            summary = deg.groupby(["setup", "evaluator_episode"], as_index=False)["degradation_vs_base"].mean()
-            summary["metric_name"] = control_metric
-            panels.append((control_metric, summary))
+        data = pd.concat(rows, ignore_index=True)
+        fig, ax = plt.subplots(figsize=(6.4, 4.8))
+        stage_order = list(stage_map.keys())
+        stage_names = [stage_map[ep] for ep in stage_order]
 
-    if not panels:
-        return
-
-    fig, axes = plt.subplots(1, len(panels), figsize=(5.5 * len(panels), 4.8), squeeze=False)
-    stage_order = list(stage_map.keys())
-    stage_names = [stage_map[ep] for ep in stage_order]
-
-    for ax, (metric, data) in zip(axes[0], panels):
         for setup_name in SETUP_ORDER:
             subset = data[data["setup"] == setup_name].copy()
             if subset.empty:
@@ -667,80 +758,344 @@ def plot_training_effect(rep_sources: dict[str, pd.DataFrame], control_df: pd.Da
                 label=SETUP_LABELS[setup_name],
             )
         ax.axhline(0.0, color="#888888", linewidth=1.1)
-        ax.set_title(short_metric_label(metric))
+        ax.set_title(f"Training effect: {short_metric_label(metric)}")
         ax.set_xlabel("Training stage")
         ax.set_ylabel(f"Mean {short_metric_label(metric)} penalty")
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            fig.legend(handles, labels, loc="upper center", ncol=min(len(labels), 3), bbox_to_anchor=(0.5, 1.02))
+        fig.tight_layout()
+        ensure_dir(output_dir)
+        fig.savefig(output_dir / f"{sanitize(family)}_training_effect_on_robustness_{sanitize(metric)}.png")
+        plt.close(fig)
 
-    handles, labels = axes[0][0].get_legend_handles_labels()
-    if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=min(len(labels), 3), bbox_to_anchor=(0.5, 1.05))
-    fig.suptitle(f"Training effect on robustness: {short_task_label(family)}", y=1.08)
-    fig.tight_layout()
-    ensure_dir(output_dir)
-    fig.savefig(output_dir / f"{sanitize(family)}_training_effect_on_robustness.png")
-    plt.close(fig)
+    if control_metric is not None and not control_df.empty and control_metric in control_df.columns:
+        deg = compute_degradation(
+            control_df[control_df["task_name"].isin([family, "base"])],
+            control_metric,
+            group_cols=["setup", "evaluator_episode"],
+            base_task_value=base_task_value,
+        )
+        if not deg.empty:
+            summary = deg.groupby(["setup", "evaluator_episode"], as_index=False)["degradation_vs_base"].mean()
+            fig, ax = plt.subplots(figsize=(6.4, 4.8))
+            stage_order = list(stage_map.keys())
+            stage_names = [stage_map[ep] for ep in stage_order]
+            subset = summary.copy()
+            values = []
+            for episode in stage_order:
+                stage_subset = subset[subset["evaluator_episode"].astype(int) == int(episode)]
+                values.append(stage_subset["degradation_vs_base"].mean() if not stage_subset.empty else np.nan)
+            ax.plot(
+                stage_names,
+                values,
+                marker=SETUP_MARKERS["protocol_b_original"],
+                color=SETUP_COLORS["protocol_b_original"],
+                label=SETUP_LABELS["protocol_b_original"],
+            )
+            ax.axhline(0.0, color="#888888", linewidth=1.1)
+            ax.set_title(f"Training effect: {short_metric_label(control_metric)}")
+            ax.set_xlabel("Training stage")
+            ax.set_ylabel(f"Mean {short_metric_label(control_metric)} penalty")
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                fig.legend(handles, labels, loc="upper center", ncol=1, bbox_to_anchor=(0.5, 1.02))
+            fig.tight_layout()
+            ensure_dir(output_dir)
+            fig.savefig(output_dir / f"{sanitize(family)}_training_effect_on_robustness_{sanitize(control_metric)}.png")
+            plt.close(fig)
+
+
+def plot_offline_vs_protocol_b_sanity(rep_sources: dict[str, pd.DataFrame], stage_map: dict[int, str],
+                                      family: str, output_dir: Path, rep_metrics: list[str],
+                                      base_task_value=None) -> None:
+    offline_same = rep_sources.get("offline_same", pd.DataFrame())
+    protocol_b = rep_sources.get("protocol_b_original", pd.DataFrame())
+    if offline_same.empty or protocol_b.empty:
+        return
+
+    stage_order = list(stage_map.keys())
+    stage_names = [stage_map[ep] for ep in stage_order]
+
+    for metric in rep_metrics:
+        if metric not in offline_same.columns or metric not in protocol_b.columns:
+            continue
+
+        offline_frame = offline_same[offline_same["task_name"].isin([family, "base"])].copy()
+        protocol_frame = protocol_b[protocol_b["task_name"].isin([family, "base"])].copy()
+        combined = pd.concat([offline_frame, protocol_frame], ignore_index=True)
+        if combined.empty:
+            continue
+
+        numeric = is_numeric_sweep(combined)
+        fig, axes = plt.subplots(1, len(stage_order), figsize=(5.2 * len(stage_order), 4.5), squeeze=False, sharey=True)
+
+        for ax, episode, stage_label in zip(axes[0], stage_order, stage_names):
+            stage_offline = offline_frame[offline_frame["evaluator_episode"].astype(int) == int(episode)].copy()
+            stage_protocol = protocol_frame[protocol_frame["evaluator_episode"].astype(int) == int(episode)].copy()
+            if stage_offline.empty and stage_protocol.empty:
+                continue
+
+            for setup_name, subset in [
+                ("offline_same", stage_offline),
+                ("protocol_b_original", stage_protocol),
+            ]:
+                if subset.empty:
+                    continue
+                subset = subset.copy()
+                subset["metric_value"] = coerce_numeric(subset[metric])
+                subset = subset.dropna(subset=["metric_value"])
+                if subset.empty:
+                    continue
+
+                if numeric:
+                    subset = subset.sort_values("task_value_num")
+                    ax.plot(
+                        subset["task_value_num"],
+                        subset["metric_value"],
+                        marker=SETUP_MARKERS[setup_name],
+                        color=SETUP_COLORS[setup_name],
+                        label=SETUP_LABELS[setup_name],
+                    )
+                    baseline_subset = subset[baseline_mask(subset, base_task_value)]
+                    if not baseline_subset.empty:
+                        ax.scatter(
+                            baseline_subset["task_value_num"],
+                            baseline_subset["metric_value"],
+                            marker="x",
+                            s=70,
+                            color=SETUP_COLORS[setup_name],
+                        )
+                else:
+                    categories = categorical_order(pd.concat([stage_offline, stage_protocol], ignore_index=True))
+                    cat_to_pos = {cat: idx for idx, cat in enumerate(categories)}
+                    offset = -0.12 if setup_name == "protocol_b_original" else 0.12
+                    subset = subset.groupby("task_value_str", as_index=False)["metric_value"].mean()
+                    positions = [cat_to_pos[val] + offset for val in subset["task_value_str"]]
+                    ax.scatter(
+                        positions,
+                        subset["metric_value"],
+                        marker=SETUP_MARKERS[setup_name],
+                        color=SETUP_COLORS[setup_name],
+                        s=60,
+                        label=SETUP_LABELS[setup_name],
+                    )
+                    ax.plot(
+                        positions,
+                        subset["metric_value"],
+                        color=SETUP_COLORS[setup_name],
+                        linewidth=1.6,
+                    )
+                    ax.set_xticks(range(len(categories)))
+                    ax.set_xticklabels(categories, rotation=15)
+
+            ax.set_title(stage_label)
+            ax.set_xlabel(short_task_label(family))
+
+        axes[0][0].set_ylabel(short_metric_label(metric))
+        handles, labels = axes[0][0].get_legend_handles_labels()
+        if handles:
+            fig.legend(handles, labels, loc="upper center", ncol=min(len(labels), 2), bbox_to_anchor=(0.5, 1.05))
+        fig.suptitle(f"Sanity check: offline diagonal vs Protocol B for {short_metric_label(metric)}", y=1.10)
+        fig.tight_layout()
+        ensure_dir(output_dir)
+        fig.savefig(output_dir / f"{sanitize(family)}_sanity_offline_vs_protocol_b_{sanitize(metric)}.png")
+        plt.close(fig)
 
 
 def plot_cross_replay_heatmaps(offline_cross: pd.DataFrame, stage_map: dict[int, str], family: str,
-                               output_dir: Path, rep_metrics: list[str]) -> None:
+                               output_dir: Path, rep_metrics: list[str], base_task_value=None) -> None:
     if offline_cross.empty:
         return
 
-    panels = []
+    penalty_panels = []
+    raw_panels = []
     for metric in rep_metrics:
+        raw_source = offline_cross[
+            offline_cross["task_name"].isin([family, "base"])
+        ].copy()
+        raw_source = raw_source[~baseline_mask(raw_source, base_task_value)].copy()
+        if not raw_source.empty and metric in raw_source.columns:
+            raw_summary = raw_source.groupby(
+                ["generator_episode", "evaluator_episode"], as_index=False
+            )[metric].mean()
+            raw_summary["metric_name"] = metric
+            raw_panels.append((metric, raw_summary))
+
         deg = compute_degradation(
             offline_cross[offline_cross["task_name"].isin([family, "base"])],
             metric,
             group_cols=["setup", "generator_episode", "evaluator_episode"],
+            base_task_value=base_task_value,
         )
         if deg.empty:
             continue
         summary = deg.groupby(["generator_episode", "evaluator_episode"], as_index=False)["degradation_vs_base"].mean()
         summary["metric_name"] = metric
-        panels.append((metric, summary))
+        penalty_panels.append((metric, summary))
 
-    if not panels:
+    if not penalty_panels and not raw_panels:
         return
 
     stage_order = list(stage_map.keys())
     stage_names = [stage_map[ep] for ep in stage_order]
-    fig, axes = plt.subplots(1, len(panels), figsize=(5.2 * len(panels), 4.8), squeeze=False)
-
-    for ax, (metric, summary) in zip(axes[0], panels):
-        pivot = summary.pivot(index="evaluator_episode", columns="generator_episode", values="degradation_vs_base")
-        pivot = pivot.reindex(index=stage_order, columns=stage_order)
-        values = pivot.to_numpy(dtype=float)
-        finite = np.isfinite(values)
-        vmax = np.nanmax(np.abs(values[finite])) if finite.any() else 1.0
-        vmax = max(vmax, 1e-6)
-        image = ax.imshow(values, cmap="coolwarm", vmin=-vmax, vmax=vmax, aspect="equal")
-        ax.set_xticks(range(len(stage_order)))
-        ax.set_yticks(range(len(stage_order)))
-        ax.set_xticklabels(stage_names, rotation=20)
-        ax.set_yticklabels(stage_names)
-        ax.set_xlabel("Generator stage")
-        ax.set_ylabel("Evaluator stage")
-        ax.set_title(short_metric_label(metric))
-
-        for row_idx in range(values.shape[0]):
-            for col_idx in range(values.shape[1]):
-                value = values[row_idx, col_idx]
-                if np.isnan(value):
-                    continue
-                color = "white" if abs(value) > vmax * 0.55 else "black"
-                ax.text(col_idx, row_idx, f"{value:.2f}", ha="center", va="center", color=color, fontsize=10)
-
-        fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
-
-    fig.suptitle(f"Offline cross-replay penalty heatmap: {short_task_label(family)}", y=1.02)
-    fig.tight_layout()
     ensure_dir(output_dir)
-    fig.savefig(output_dir / f"{sanitize(family)}_offline_cross_replay_heatmaps.png")
-    plt.close(fig)
+
+    if penalty_panels:
+        for metric, summary in penalty_panels:
+            fig, ax = plt.subplots(figsize=(5.4, 4.8))
+            pivot = summary.pivot(index="evaluator_episode", columns="generator_episode", values="degradation_vs_base")
+            pivot = pivot.reindex(index=stage_order, columns=stage_order)
+            image = draw_heatmap(
+                ax,
+                pivot.to_numpy(dtype=float),
+                stage_names,
+                short_metric_label(metric),
+                cmap="coolwarm",
+                symmetric=True,
+            )
+            fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+            fig.suptitle(f"Offline cross-replay penalty: {short_metric_label(metric)}", y=1.02)
+            fig.tight_layout()
+            fig.savefig(output_dir / f"{sanitize(family)}_offline_cross_replay_penalty_{sanitize(metric)}.png")
+            plt.close(fig)
+
+    if raw_panels:
+        for metric, summary in raw_panels:
+            fig, ax = plt.subplots(figsize=(5.4, 4.8))
+            pivot = summary.pivot(index="evaluator_episode", columns="generator_episode", values=metric)
+            pivot = pivot.reindex(index=stage_order, columns=stage_order)
+            image = draw_heatmap(
+                ax,
+                pivot.to_numpy(dtype=float),
+                stage_names,
+                short_metric_label(metric),
+                cmap="viridis",
+                symmetric=False,
+            )
+            fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+            fig.suptitle(f"Offline cross-replay raw value: {short_metric_label(metric)}", y=1.02)
+            fig.tight_layout()
+            fig.savefig(output_dir / f"{sanitize(family)}_offline_cross_replay_raw_{sanitize(metric)}.png")
+            plt.close(fig)
+
+    per_variant_dir = output_dir / "per_variant_heatmaps"
+    ensure_dir(per_variant_dir)
+    family_source = offline_cross[offline_cross["task_name"].isin([family, "base"])].copy()
+    base_source = family_source[baseline_mask(family_source, base_task_value)].copy()
+    variant_rows = ordered_variant_rows(family_source[~baseline_mask(family_source, base_task_value)].copy())
+
+    if not base_source.empty:
+        base_raw_panels = []
+        for metric in rep_metrics:
+            if metric not in base_source.columns:
+                continue
+            raw_summary = base_source.groupby(
+                ["generator_episode", "evaluator_episode"], as_index=False
+            )[metric].mean()
+            if not raw_summary.empty:
+                base_raw_panels.append((metric, raw_summary))
+
+        if base_raw_panels:
+            for metric, summary in base_raw_panels:
+                fig, ax = plt.subplots(figsize=(5.4, 4.8))
+                pivot = summary.pivot(index="evaluator_episode", columns="generator_episode", values=metric)
+                pivot = pivot.reindex(index=stage_order, columns=stage_order)
+                image = draw_heatmap(
+                    ax,
+                    pivot.to_numpy(dtype=float),
+                    stage_names,
+                    short_metric_label(metric),
+                    cmap="viridis",
+                    symmetric=False,
+                )
+                fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+                fig.suptitle(
+                    f"{short_task_label(family)} matched baseline: {short_metric_label(metric)}",
+                    y=1.02,
+                )
+                fig.tight_layout()
+                fig.savefig(per_variant_dir / f"{sanitize(family)}_base_raw_{sanitize(metric)}.png")
+                plt.close(fig)
+
+    for variant_name, variant_value_label in variant_rows:
+        variant_source = family_source[family_source["variant"].astype(str) == str(variant_name)].copy()
+        if variant_source.empty:
+            continue
+
+        variant_penalty_panels = []
+        variant_raw_panels = []
+        for metric in rep_metrics:
+            if metric not in variant_source.columns:
+                continue
+
+            raw_summary = variant_source.groupby(
+                ["generator_episode", "evaluator_episode"], as_index=False
+            )[metric].mean()
+            if not raw_summary.empty:
+                variant_raw_panels.append((metric, raw_summary))
+
+            deg = compute_degradation(
+                pd.concat([variant_source, family_source[baseline_mask(family_source, base_task_value)]], ignore_index=True),
+                metric,
+                group_cols=["setup", "generator_episode", "evaluator_episode"],
+                base_task_value=base_task_value,
+            )
+            deg = deg[deg["variant"].astype(str) == str(variant_name)].copy()
+            if not deg.empty:
+                penalty_summary = deg.groupby(
+                    ["generator_episode", "evaluator_episode"], as_index=False
+                )["degradation_vs_base"].mean()
+                variant_penalty_panels.append((metric, penalty_summary))
+
+        if variant_penalty_panels:
+            for metric, summary in variant_penalty_panels:
+                fig, ax = plt.subplots(figsize=(5.4, 4.8))
+                pivot = summary.pivot(index="evaluator_episode", columns="generator_episode", values="degradation_vs_base")
+                pivot = pivot.reindex(index=stage_order, columns=stage_order)
+                image = draw_heatmap(
+                    ax,
+                    pivot.to_numpy(dtype=float),
+                    stage_names,
+                    short_metric_label(metric),
+                    cmap="coolwarm",
+                    symmetric=True,
+                )
+                fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+                fig.suptitle(
+                    f"{short_task_label(family)} variant {variant_value_label}: {short_metric_label(metric)} penalty",
+                    y=1.02,
+                )
+                fig.tight_layout()
+                fig.savefig(per_variant_dir / f"{sanitize(family)}_{sanitize(variant_value_label)}_penalty_{sanitize(metric)}.png")
+                plt.close(fig)
+
+        if variant_raw_panels:
+            for metric, summary in variant_raw_panels:
+                fig, ax = plt.subplots(figsize=(5.4, 4.8))
+                pivot = summary.pivot(index="evaluator_episode", columns="generator_episode", values=metric)
+                pivot = pivot.reindex(index=stage_order, columns=stage_order)
+                image = draw_heatmap(
+                    ax,
+                    pivot.to_numpy(dtype=float),
+                    stage_names,
+                    short_metric_label(metric),
+                    cmap="viridis",
+                    symmetric=False,
+                )
+                fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+                fig.suptitle(
+                    f"{short_task_label(family)} variant {variant_value_label}: {short_metric_label(metric)}",
+                    y=1.02,
+                )
+                fig.tight_layout()
+                fig.savefig(per_variant_dir / f"{sanitize(family)}_{sanitize(variant_value_label)}_raw_{sanitize(metric)}.png")
+                plt.close(fig)
 
 
 def save_processed_tables(output_dir: Path, rep_sources: dict[str, pd.DataFrame], control_df: pd.DataFrame,
-                          families: list[str], rep_metrics: list[str], control_metric: str | None) -> None:
+                          families: list[str], rep_metrics: list[str], control_metric: str | None,
+                          base_task_value=None) -> None:
     ensure_dir(output_dir)
 
     rep_frames = []
@@ -773,6 +1128,7 @@ def save_processed_tables(output_dir: Path, rep_sources: dict[str, pd.DataFrame]
                     df[df["task_name"].isin([family, "base"])],
                     metric,
                     group_cols=["setup", "evaluator_episode"],
+                    base_task_value=base_task_value,
                 )
                 if not deg.empty:
                     degradation_frames.append(deg)
@@ -781,6 +1137,7 @@ def save_processed_tables(output_dir: Path, rep_sources: dict[str, pd.DataFrame]
                 control_df[control_df["task_name"].isin([family, "base"])],
                 control_metric,
                 group_cols=["setup", "evaluator_episode"],
+                base_task_value=base_task_value,
             )
             if not deg.empty:
                 degradation_frames.append(deg)
@@ -788,7 +1145,8 @@ def save_processed_tables(output_dir: Path, rep_sources: dict[str, pd.DataFrame]
         pd.concat(degradation_frames, ignore_index=True).to_csv(output_dir / "degradation_long.csv", index=False)
 
 
-def write_manifest(output_dir: Path, *, run_root: Path, discovered: dict, stage_map: dict[int, str], families: list[str]) -> None:
+def write_manifest(output_dir: Path, *, run_root: Path, discovered: dict, stage_map: dict[int, str],
+                   families: list[str], base_task_value=None) -> None:
     payload = {
         "run_root": str(run_root),
         "train_id": discovered["train_id"],
@@ -798,6 +1156,7 @@ def write_manifest(output_dir: Path, *, run_root: Path, discovered: dict, stage_
         "protocol_b_belief_csvs": [str(path) for path in discovered["protocol_b_belief_csvs"]],
         "stage_map": {str(k): v for k, v in stage_map.items()},
         "families": families,
+        "base_task_value": base_task_value,
     }
     ensure_dir(output_dir)
     (output_dir / "figure_manifest.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -817,6 +1176,7 @@ def main(args):
         args.protocol_b_belief_csv,
     )
     normalized = normalize_sources(discovered)
+    base_task_value = parse_base_task_value(args.base_task_value)
 
     rep_sources = {
         "protocol_b_original": normalized["protocol_b_repr"],
@@ -845,22 +1205,50 @@ def main(args):
     print(f"train_id={discovered['train_id']}", flush=True)
     print(f"families={families}", flush=True)
     print(f"stage_map={stage_map}", flush=True)
+    print(f"base_task_value={base_task_value}", flush=True)
 
     figures_dir = output_dir / "figures"
+    base_dir = figures_dir / "base_performance"
+    mismatch_dir = figures_dir / "mismatch_penalty"
+    training_dir = figures_dir / "training_effect"
+    heatmap_dir = figures_dir / "cross_replay_heatmaps"
+    sanity_dir = figures_dir / "sanity_check"
     processed_dir = output_dir / "processed"
-    ensure_dir(figures_dir)
+    for path in [figures_dir, base_dir, mismatch_dir, training_dir, heatmap_dir, sanity_dir]:
+        ensure_dir(path)
     ensure_dir(processed_dir)
 
     for family in families:
-        family_dir = figures_dir / sanitize(family)
-        ensure_dir(family_dir)
-        plot_base_performance(rep_sources, control_df, stage_map, family, family_dir, rep_metrics, control_metric)
-        plot_mismatch_penalty_curves(rep_sources, control_df, stage_map, family, family_dir, rep_metrics, control_metric)
-        plot_training_effect(rep_sources, control_df, stage_map, family, family_dir, rep_metrics, control_metric)
-        plot_cross_replay_heatmaps(rep_sources["offline_cross"], stage_map, family, family_dir, rep_metrics)
+        family_base_dir = base_dir / sanitize(family)
+        family_mismatch_dir = mismatch_dir / sanitize(family)
+        family_training_dir = training_dir / sanitize(family)
+        family_heatmap_dir = heatmap_dir / sanitize(family)
+        family_sanity_dir = sanity_dir / sanitize(family)
+        for path in [family_base_dir, family_mismatch_dir, family_training_dir, family_heatmap_dir, family_sanity_dir]:
+            ensure_dir(path)
+        plot_base_performance(
+            rep_sources, control_df, stage_map, family, family_base_dir, rep_metrics, control_metric, base_task_value
+        )
+        plot_mismatch_penalty_curves(
+            rep_sources, control_df, stage_map, family, family_mismatch_dir, rep_metrics, control_metric, base_task_value
+        )
+        plot_training_effect(
+            rep_sources, control_df, stage_map, family, family_training_dir, rep_metrics, control_metric, base_task_value
+        )
+        plot_cross_replay_heatmaps(rep_sources["offline_cross"], stage_map, family, family_heatmap_dir, rep_metrics, base_task_value)
+        plot_offline_vs_protocol_b_sanity(
+            rep_sources, stage_map, family, family_sanity_dir, rep_metrics, base_task_value
+        )
 
-    save_processed_tables(processed_dir, rep_sources, control_df, families, rep_metrics, control_metric)
-    write_manifest(processed_dir, run_root=run_root, discovered=discovered, stage_map=stage_map, families=families)
+    save_processed_tables(processed_dir, rep_sources, control_df, families, rep_metrics, control_metric, base_task_value)
+    write_manifest(
+        processed_dir,
+        run_root=run_root,
+        discovered=discovered,
+        stage_map=stage_map,
+        families=families,
+        base_task_value=base_task_value,
+    )
     print(f"Saved comparison figures to: {figures_dir}", flush=True)
     print(f"Saved processed tables to: {processed_dir}", flush=True)
 
@@ -877,5 +1265,7 @@ if __name__ == "__main__":
                         help="Optional explicit Protocol B workbook path(s).")
     parser.add_argument("--protocol-b-belief-csv", type=str, nargs="*", default=None,
                         help="Optional explicit Protocol B belief summary CSV path(s).")
+    parser.add_argument("--base-task-value", type=str, default=None,
+                        help="Matched baseline task_value used when files do not contain an explicit base row.")
     args = parser.parse_args()
     main(args)

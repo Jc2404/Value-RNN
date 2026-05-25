@@ -58,7 +58,7 @@ def pick_variants(train_args, args):
                 variants.append((f"tmaze_length={length}", {"length": length}))
             return variants
         if args.test_stochasticity:
-            for stochasticity in [0.0, 0.1, 0.4]:
+            for stochasticity in [0.0, 0.2, 0.4]:
                 variants.append((f"tmaze_stochasticity={stochasticity}", {"stochasticity": stochasticity}))
             return variants
 
@@ -70,7 +70,7 @@ def pick_variants(train_args, args):
 
     if env_name == "starkweather":
         if args.test_p_omission:
-            for p_omission in [0.0, 0.2, 0.4]:
+            for p_omission in [0.0, 0.2, 0.4, 0.6]:
                 variants.append((f"starkweather_p_omission={p_omission}", {"p_omission": p_omission}))
             return variants
         if args.test_bin_size:
@@ -145,6 +145,13 @@ def build_parser():
     parser.add_argument("--wandb_project", type=str, default="offline-replay-decode")
     parser.add_argument("--weights_dir", type=str, default="weights")
     parser.add_argument("--checkpoint_episodes", type=int, nargs="+", required=True)
+    parser.add_argument(
+        "--generator_checkpoint_episodes",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Optional subset of cached generator checkpoints to replay. Defaults to all caches under the run root.",
+    )
     parser.add_argument("--num_samples", type=int, default=10000,
                         help="Sample budget used by the matched compound-online baseline.")
     parser.add_argument("--epsilon", type=float, default=0.0)
@@ -381,6 +388,9 @@ def run_enabled_analyses(args, device, softmax_specs, *, setup, evaluator_episod
 def main(args):
     train_args = get_run_statistic(args.train_id)
     evaluator_episodes = ordered_unique_ints(args.checkpoint_episodes)
+    generator_episode_filter = None
+    if args.generator_checkpoint_episodes:
+        generator_episode_filter = set(ordered_unique_ints(args.generator_checkpoint_episodes))
     run_root = os.path.abspath(run_root_dir(args.name))
     cache_dir = run_root
     artefact_root = os.path.abspath(artefacts_dir(run_root))
@@ -390,10 +400,19 @@ def main(args):
     cache_rows = []
     if os.path.isdir(cache_dir):
         cache_rows = load_cache_manifest(cache_dir)
+    if generator_episode_filter is not None:
+        cache_rows = [
+            row for row in cache_rows
+            if int(row["generator_episode"]) in generator_episode_filter
+        ]
     if not cache_rows and not args.run_compound_online:
         raise FileNotFoundError(
-            f"No trajectory caches found under {cache_dir}. "
-            "Run sample_offline_trajectories.py first or enable --run_compound_online."
+            f"No trajectory caches found under {cache_dir}"
+            + (
+                f" for generator episodes {sorted(generator_episode_filter)}."
+                if generator_episode_filter is not None else "."
+            )
+            + " Run sample_offline_trajectories.py first or enable --run_compound_online."
         )
 
     device = select_device()
