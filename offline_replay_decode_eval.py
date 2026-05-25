@@ -54,11 +54,11 @@ def pick_variants(train_args, args):
 
     if env_name == "tmaze":
         if args.test_length:
-            for length in [20, 30, 40]:
+            for length in [20, 30, 40, 50, 60]:
                 variants.append((f"tmaze_length={length}", {"length": length}))
             return variants
         if args.test_stochasticity:
-            for stochasticity in [0.0, 0.2, 0.4]:
+            for stochasticity in [0.0, 0.1, 0.2, 0.3, 0.4]:
                 variants.append((f"tmaze_stochasticity={stochasticity}", {"stochasticity": stochasticity}))
             return variants
 
@@ -70,7 +70,7 @@ def pick_variants(train_args, args):
 
     if env_name == "starkweather":
         if args.test_p_omission:
-            for p_omission in [0.0, 0.2, 0.4, 0.6]:
+            for p_omission in [0.0, 0.1, 0.2, 0.3, 0.4]:
                 variants.append((f"starkweather_p_omission={p_omission}", {"p_omission": p_omission}))
             return variants
         if args.test_bin_size:
@@ -99,7 +99,7 @@ def pick_variants(train_args, args):
 
     if env_name == "tiger":
         if args.test_listen_accuracy:
-            for accuracy in [0.4, 0.75, 0.9]:
+            for accuracy in [0.4, 0.55, 0.7, 0.85, 1.0]:
                 variants.append((f"listen_accuracy={accuracy}", {"listen_accuracy": accuracy}))
             return variants
         if args.test_reward_listen:
@@ -109,11 +109,11 @@ def pick_variants(train_args, args):
 
     if env_name == "gridworld":
         if args.test_grid_size:
-            for size in [6, 10, 14]:
+            for size in [6, 8, 10, 12, 14]:
                 variants.append((f"grid_size={size}", {"size": size}))
             return variants
         if args.test_tprob:
-            for tprob in [0.1, 0.4, 0.7, 1.0]:
+            for tprob in [0.1, 0.3, 0.5, 0.7, 0.9]:
                 variants.append((f"tprob={tprob}", {"tprob": tprob}))
             return variants
         if args.test_reward_scheme:
@@ -127,11 +127,11 @@ def pick_variants(train_args, args):
 
     if env_name == "crybaby":
         if args.test_p_cry_if_hungry:
-            for p_cry_if_hungry in [0.2, 0.5, 0.75, 0.9]:
+            for p_cry_if_hungry in [0.30, 0.45, 0.60, 0.75, 0.9]:
                 variants.append((f"crybaby_p_cry_if_hungry={p_cry_if_hungry}", {"p_cry_if_hungry": p_cry_if_hungry}))
             return variants
         if args.test_p_cry_if_full:
-            for p_cry_if_full in [0.0, 0.2, 0.4]:
+            for p_cry_if_full in [0.0, 0.1, 0.2, 0.3, 0.4]:
                 variants.append((f"crybaby_p_cry_if_full={p_cry_if_full}", {"p_cry_if_full": p_cry_if_full}))
             return variants
 
