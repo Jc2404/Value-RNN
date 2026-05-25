@@ -14,17 +14,16 @@ from offline_trajectory_utils import (
 def build_parser():
     parser = ArgumentParser("Run offline trajectory caching and offline replay decoder/MINE evaluation end-to-end.")
     parser.add_argument("train_id", type=str)
-    parser.add_argument("--name", type=str, default=None)
+    parser.add_argument("--name", type=str, required=True)
     parser.add_argument("--weights_dir", type=str, default="weights")
-    parser.add_argument("--report_dir", type=str, default="report")
-    parser.add_argument("--cache_dir", type=str, default="cache")
-    parser.add_argument("--artifact_dir", type=str, default="cache/artifact")
     parser.add_argument("--checkpoint_episodes", type=int, nargs="+", required=True)
     parser.add_argument("--num_samples", type=int, default=10000,
                         help="Target number of cached decision timesteps per generator checkpoint / variant.")
     parser.add_argument("--epsilon", type=float, default=0.0)
+    parser.add_argument("--approximate", action="store_true")
     parser.add_argument("--sample_wandb_project", type=str, default="offline-trajectory-cache")
     parser.add_argument("--replay_wandb_project", type=str, default="offline-replay-decode")
+    parser.add_argument("--run_compound_online", action="store_true")
     add_variant_test_flags(parser)
     add_offline_analysis_flags(parser)
     return parser
@@ -32,8 +31,7 @@ def build_parser():
 
 def _append_common_positionals(cmd, args):
     cmd.append(args.train_id)
-    if args.name is not None:
-        cmd.extend(["--name", args.name])
+    cmd.extend(["--name", args.name])
 
 
 def _append_variant_flags(cmd, args):
@@ -114,9 +112,6 @@ def main(args):
     _append_common_positionals(sample_cmd, args)
     sample_cmd.extend(["--wandb_project", args.sample_wandb_project])
     sample_cmd.extend(["--weights_dir", args.weights_dir])
-    sample_cmd.extend(["--report_dir", args.report_dir])
-    if args.cache_dir is not None:
-        sample_cmd.extend(["--cache_dir", args.cache_dir])
     sample_cmd.extend(["--checkpoint_episodes", *[str(ep) for ep in checkpoint_episodes]])
     sample_cmd.extend(["--num_samples", str(args.num_samples)])
     sample_cmd.extend(["--epsilon", str(args.epsilon)])
@@ -126,12 +121,14 @@ def main(args):
     _append_common_positionals(replay_cmd, args)
     replay_cmd.extend(["--wandb_project", args.replay_wandb_project])
     replay_cmd.extend(["--weights_dir", args.weights_dir])
-    replay_cmd.extend(["--report_dir", args.report_dir])
-    if args.cache_dir is not None:
-        replay_cmd.extend(["--cache_dir", args.cache_dir])
-    if args.artifact_dir is not None:
-        replay_cmd.extend(["--artifact_dir", args.artifact_dir])
     replay_cmd.extend(["--checkpoint_episodes", *[str(ep) for ep in checkpoint_episodes]])
+    replay_cmd.extend(["--num_samples", str(args.num_samples)])
+    replay_cmd.extend(["--epsilon", str(args.epsilon)])
+    if args.approximate:
+        replay_cmd.append("--approximate")
+    if args.run_compound_online:
+        replay_cmd.append("--run_compound_online")
+    _append_variant_flags(replay_cmd, args)
     _append_analysis_flags(replay_cmd, args)
 
     run_command(sample_cmd, repo_root)

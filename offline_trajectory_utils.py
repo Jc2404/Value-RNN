@@ -32,6 +32,22 @@ def ordered_unique_ints(values: Sequence[int]) -> List[int]:
     return out
 
 
+def run_root_dir(name: str, base_dir: str = "cache") -> str:
+    return os.path.join(base_dir, sanitize_component(name))
+
+
+def artefacts_dir(run_root: str) -> str:
+    return os.path.join(run_root, "artefacts")
+
+
+def offline_replay_root(artefacts_root: str) -> str:
+    return os.path.join(artefacts_root, "offline_replay")
+
+
+def compound_online_root(artefacts_root: str) -> str:
+    return os.path.join(artefacts_root, "compound_online")
+
+
 def add_variant_test_flags(parser) -> None:
     parser.add_argument("--test_length", action="store_true")
     parser.add_argument("--test_stochasticity", action="store_true")
@@ -82,14 +98,6 @@ def add_offline_analysis_flags(parser) -> None:
     parser.add_argument("--mine_lambda", type=float, default=0.0)
     parser.add_argument("--representation_size", type=int, default=16)
     parser.add_argument("--belief_part", type=int, default=None)
-
-
-def default_cache_dir(report_dir: str, train_id: str) -> str:
-    return os.path.join(report_dir, "offline_trajectory_cache", train_id)
-
-
-def default_artifact_dir(report_dir: str, train_id: str) -> str:
-    return os.path.join(report_dir, "offline_replay", train_id)
 
 
 def cache_file_path(cache_dir: str, generator_episode: int, variant_name: str) -> str:

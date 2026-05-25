@@ -9,9 +9,9 @@ from offline_trajectory_utils import (
     add_variant_test_flags,
     cache_file_path,
     collect_offline_trajectory_episode,
-    default_cache_dir,
     ensure_dir,
     ordered_unique_ints,
+    run_root_dir,
     save_csv,
     save_json,
     write_cache_manifest,
@@ -24,11 +24,9 @@ from utils import get_run_statistic
 def build_parser():
     parser = ArgumentParser("Collect fixed offline trajectory caches per checkpoint and Protocol-B variant.")
     parser.add_argument("train_id", type=str)
-    parser.add_argument("--name", type=str, default=None)
+    parser.add_argument("--name", type=str, required=True)
     parser.add_argument("--wandb_project", type=str, default="offline-trajectory-cache")
     parser.add_argument("--weights_dir", type=str, default="weights")
-    parser.add_argument("--report_dir", type=str, default="report")
-    parser.add_argument("--cache_dir", type=str, default=None)
     parser.add_argument("--checkpoint_episodes", type=int, nargs="+", required=True)
     parser.add_argument("--num_samples", type=int, default=10000,
                         help="Target number of decision timesteps to cache per checkpoint/variant.")
@@ -44,7 +42,7 @@ def main(args):
     if not variants:
         variants = [("base", {})]
 
-    cache_dir = os.path.abspath(args.cache_dir or default_cache_dir(args.report_dir, args.train_id))
+    cache_dir = os.path.abspath(run_root_dir(args.name))
     ensure_dir(cache_dir)
 
     cfg = vars(train_args) | vars(args)
@@ -105,6 +103,7 @@ def main(args):
                     "task_value": task_value,
                     "environment": train_args.environment,
                     "env_overrides": overrides,
+                    "run_name": args.name,
                     "epsilon": float(args.epsilon),
                     "num_samples_target": int(args.num_samples),
                     "num_samples_collected": int(collected_steps),
