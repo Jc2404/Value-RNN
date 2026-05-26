@@ -1,9 +1,9 @@
 {
-  "run_name": "Starkweather-p0.1",
+  "run_name": "Starkweather-p0.2",
   "output_root": "runs",
   "train": {
     "enabled": true,
-    "name": "Starkweather-agent-p0.1",
+    "name": "Starkweather-agent-p0.2",
     "args": [
       "--eval-period", "5",
       "--num-rollouts", "50",
@@ -15,7 +15,7 @@
       "--epsilon", "0.2",
       "--buffer-capacity", "8192",
       "starkweather",
-      "--p_omission", "0.1"
+      "--p_omission", "0.2"
     ]
   },
   "decoder_train": {
@@ -53,33 +53,6 @@
       "--valid_size", "0.2",
       "--use_wandb",
       "--eval_after_train"
-    ]
-  },
-  "protocol_a": {
-    "enabled": true,
-    "name": "protocolA",
-    "args": [
-      "--run_mi",
-      "--run_regression",
-      "--run_softmax_linear_probe",
-      "--run_softmax_mlp_probe",
-      "--period", "40",
-      "--end_episode", "200",
-      "--probe_num_samples", "10000",
-      "--probe_valid_size", "0.2",
-      "--probe_epochs", "300",
-      "--probe_lr", "0.001",
-      "--probe_batch_size", "1024",
-      "--mine_num_samples", "10000",
-      "--mine_num_epochs", "400",
-      "--mine_batch_size", "1024",
-      "--mine_learning_rate", "0.001"
-    ],
-    "tests": [
-      {
-        "label": "test_p_omission",
-        "flag": "--test_p_omission"
-      }
     ]
   },
   "protocol_b": {
