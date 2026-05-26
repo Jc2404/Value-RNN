@@ -99,7 +99,7 @@ def pick_variants(train_args, args):
 
     if env_name == "tiger":
         if args.test_listen_accuracy:
-            for accuracy in [0.4, 0.55, 0.7, 0.85, 1.0]:
+            for accuracy in [0.55, 0.65, 0.75, 0.85, 0.95]:
                 variants.append((f"listen_accuracy={accuracy}", {"listen_accuracy": accuracy}))
             return variants
         if args.test_reward_listen:
