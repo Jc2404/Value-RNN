@@ -375,7 +375,7 @@ if __name__ == "__main__":
     # W&B / outputs
     parser.add_argument("--wandb_project", type=str, default="decoder-train")
     parser.add_argument("--weights_dir", type=str, default="weights")
-    parser.add_argument("--results_dir", type=str, default=None,
+    parser.add_argument("--results_dir", type=str, default="cache",
                         help="Optional directory for decoder metrics/summary CSV files.")
     parser.add_argument("--decoder_subdir", type=str, default=None,
                         help="Optional extra subdirectory under weights/decoders/<train_id>/ for this decoder run.")
@@ -393,7 +393,7 @@ if __name__ == "__main__":
     # ---- shared probe hyperparams (same names as fix_decode_eval.py)
     parser.add_argument("--probe_num_samples", type=int, default=10000)
     parser.add_argument("--probe_valid_size", type=float, default=0.2)
-    parser.add_argument("--probe_epochs", type=int, default=300)
+    parser.add_argument("--probe_epochs", type=int, default=200)
     parser.add_argument("--probe_lr", type=float, default=1e-3)
     parser.add_argument("--probe_batch_size", type=int, default=1024)
     parser.add_argument("--probe_standardize", action="store_true")

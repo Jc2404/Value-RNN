@@ -1,5 +1,6 @@
 import csv
 import json
+import math
 import os
 import re
 from random import random
@@ -40,8 +41,16 @@ def artefacts_dir(run_root: str) -> str:
     return os.path.join(run_root, "artefacts")
 
 
+def matched_trajectory_cache_root(run_root: str) -> str:
+    return os.path.join(run_root, "matched_trajectories")
+
+
 def offline_replay_root(artefacts_root: str) -> str:
     return os.path.join(artefacts_root, "offline_replay")
+
+
+def counterfactual_replay_root(artefacts_root: str) -> str:
+    return os.path.join(artefacts_root, "offline_counterfactual_replay")
 
 
 def compound_online_root(artefacts_root: str) -> str:
@@ -115,6 +124,16 @@ def pair_artifact_dir(artifact_root: str, generator_episode: int, variant_name: 
         f"gen_ep_{int(generator_episode)}",
         sanitize_component(variant_name),
         f"eval_ep_{int(evaluator_episode)}",
+    )
+
+
+def counterfactual_belief_cache_path(counterfactual_root: str, generator_episode: int, variant_name: str) -> str:
+    return os.path.join(
+        counterfactual_root,
+        "belief_caches",
+        f"gen_ep_{int(generator_episode)}",
+        sanitize_component(variant_name),
+        "belief_cache.pt",
     )
 
 
@@ -287,6 +306,116 @@ def flatten_cached_replay(episodes: Sequence[Dict], replayed_hiddens: Sequence[t
     hiddens = torch.cat(hidden_batches, dim=0)
     beliefs = tuple(torch.cat(parts, dim=0) for parts in belief_parts)
     return hiddens, beliefs
+
+
+def assert_counterfactual_belief_replay_supported(environment) -> None:
+    belief_type = getattr(environment, "belief_type", None)
+    if belief_type != "exact":
+        raise ValueError(
+            "Counterfactual same-trajectory replay currently supports exact-belief "
+            f"environments only, got belief_type={belief_type!r}."
+        )
+
+    missing = [
+        name for name in ("_init_belief", "_update_belief", "get_belief")
+        if not hasattr(environment, name)
+    ]
+    if missing:
+        raise ValueError(
+            "Environment does not expose the belief replay hooks required for "
+            f"counterfactual analysis: missing {missing}."
+        )
+
+
+def _clone_belief_tuple(beliefs) -> Tuple[torch.Tensor, ...]:
+    if not isinstance(beliefs, (tuple, list)) or len(beliefs) == 0:
+        raise ValueError("Expected environment.get_belief() to return a non-empty tuple/list.")
+    return tuple(part.detach().clone().cpu() for part in beliefs)
+
+
+def _validate_replayed_belief_parts(beliefs: Tuple[torch.Tensor, ...]) -> Tuple[bool, str]:
+    for part_idx, part in enumerate(beliefs):
+        if not torch.is_tensor(part):
+            return False, f"belief_part_{part_idx}_not_tensor"
+        if not torch.isfinite(part).all():
+            return False, f"belief_part_{part_idx}_nonfinite"
+
+    planning_belief = beliefs[-1]
+    if planning_belief.ndim != 1:
+        return False, "planning_belief_not_vector"
+
+    total_mass = float(planning_belief.sum().item())
+    if not math.isfinite(total_mass):
+        return False, "planning_belief_mass_nonfinite"
+    if total_mass <= 0.0:
+        return False, "planning_belief_zero_mass"
+    if float(planning_belief.min().item()) < -1e-6:
+        return False, "planning_belief_negative_mass"
+
+    return True, "ok"
+
+
+def recompute_counterfactual_belief_episode(environment, episode_record: Dict) -> Dict:
+    observations = episode_record["observations"]
+    actions = episode_record["actions"]
+
+    if observations.ndim == 1:
+        observations = observations.view(1, -1)
+
+    beliefs_by_part = None
+    episode_id = episode_record.get("episode_id")
+
+    def _invalid(step_idx: int, reason: str, exception_text: str | None = None) -> Dict:
+        payload = {
+            "valid": False,
+            "episode_id": episode_id,
+            "length": int(observations.size(0)),
+            "first_invalid_step": int(step_idx),
+            "reason": reason,
+        }
+        if exception_text is not None:
+            payload["exception"] = exception_text
+        return payload
+
+    try:
+        environment._init_belief(observations[0].detach().clone())
+        belief_t = _clone_belief_tuple(environment.get_belief())
+    except Exception as exc:  # pragma: no cover - diagnostic path
+        return _invalid(0, "belief_init_exception", exception_text=repr(exc))
+
+    is_valid, reason = _validate_replayed_belief_parts(belief_t)
+    if not is_valid:
+        return _invalid(0, reason)
+
+    beliefs_by_part = [[] for _ in range(len(belief_t))]
+    for part_idx, part in enumerate(belief_t):
+        beliefs_by_part[part_idx].append(part)
+
+    for step_idx in range(1, observations.size(0)):
+        action = int(actions[step_idx - 1].item())
+        observation = observations[step_idx].detach().clone()
+        try:
+            environment._update_belief(action, observation)
+            belief_t = _clone_belief_tuple(environment.get_belief())
+        except Exception as exc:  # pragma: no cover - diagnostic path
+            return _invalid(step_idx, "belief_update_exception", exception_text=repr(exc))
+
+        is_valid, reason = _validate_replayed_belief_parts(belief_t)
+        if not is_valid:
+            return _invalid(step_idx, reason)
+
+        for part_idx, part in enumerate(belief_t):
+            beliefs_by_part[part_idx].append(part)
+
+    assert beliefs_by_part is not None
+    return {
+        "valid": True,
+        "episode": {
+            "episode_id": episode_id,
+            "length": int(observations.size(0)),
+            "beliefs": tuple(torch.stack(parts) for parts in beliefs_by_part),
+        },
+    }
 
 
 def save_linreg_probe(path: str, probe: Dict) -> None:

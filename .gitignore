@@ -19,3 +19,7 @@ runs/
 results/
 pipeline\__pycache__/
 cache/
+Milestone_report/
+results/
+Final Report/*
+tmp_pdf/*
