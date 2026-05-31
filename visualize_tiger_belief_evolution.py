@@ -46,6 +46,10 @@ from environments.tiger import Tiger
 PROJECT_PATH = "jc2404-university-of-cambridge/belief-train_reproduction"
 CHECKPOINT_RE = re.compile(r"^(?P<run_id>.+)-(?P<episode>\d+)-(?P<kind>Q|Q_tar)\.pth$")
 
+AXIS_LABEL_FONT_SIZE = 19
+TICK_LABEL_FONT_SIZE = 17
+LEGEND_FONT_SIZE = 17
+
 
 def select_device(device_name: str) -> torch.device:
     if device_name == "cpu":
@@ -480,7 +484,7 @@ def add_reset_markers(
             color="0.45",
             linestyle=":",
             linewidth=1.1,
-            alpha=0.4,
+            alpha=0.55,
             zorder=0,
         )
 
@@ -492,9 +496,15 @@ def reset_legend_handle() -> Line2D:
         color="0.45",
         linestyle=":",
         linewidth=1.1,
-        alpha=0.4,
+        alpha=0.55,
         label="environment reset",
     )
+
+
+def style_axis(axis) -> None:
+    axis.tick_params(axis="both", which="major", labelsize=TICK_LABEL_FONT_SIZE)
+    axis.spines["top"].set_visible(False)
+    axis.spines["right"].set_visible(False)
 
 
 def plot_rollout(
@@ -523,7 +533,7 @@ def plot_rollout(
         color="tab:red",
         linewidth=2.0,
         alpha=0.45,
-        label="observation",
+        label=r"$o_t$",
     )
     ax_obs.step(
         x,
@@ -533,17 +543,26 @@ def plot_rollout(
         linewidth=2.0,
         linestyle="--",
         alpha=0.45,
-        label="true state",
+        label=r"$s_t$",
     )
     add_reset_markers(ax_obs, rollout["terminal_after_step"])
     ax_obs.set_ylim(-0.25, 1.25)
     ax_obs.set_yticks([0, 1])
-    ax_obs.set_yticklabels(["left", "right"])
-    ax_obs.set_ylabel("obs / state")
+    ax_obs.set_yticklabels([r"$o_{\mathrm{hearL}}$", r"$o_{\mathrm{hearR}}$"])
+    ax_obs.set_ylabel(r"$o_t \, / \, s_t$", fontsize=AXIS_LABEL_FONT_SIZE)
     obs_handles, obs_labels = ax_obs.get_legend_handles_labels()
     obs_handles.append(reset_legend_handle())
     obs_labels.append("environment reset")
-    ax_obs.legend(obs_handles, obs_labels, loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0)
+    ax_obs.legend(
+        obs_handles,
+        obs_labels,
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
+        borderaxespad=0.0,
+        frameon=False,
+        fontsize=LEGEND_FONT_SIZE,
+    )
+    style_axis(ax_obs)
 
     ax_belief.plot(
         x,
@@ -551,11 +570,11 @@ def plot_rollout(
         color="tab:blue",
         linewidth=2.0,
         alpha=0.9,
-        label="belief P(left)",
+        label=r"$P(s_t=\mathrm{L})$",
     )
     add_reset_markers(ax_belief, rollout["terminal_after_step"])
     ax_belief.set_ylim(-0.05, 1.05)
-    ax_belief.set_ylabel("belief")
+    ax_belief.set_ylabel("belief", fontsize=AXIS_LABEL_FONT_SIZE)
     belief_handles, belief_labels = ax_belief.get_legend_handles_labels()
     belief_handles.append(reset_legend_handle())
     belief_labels.append("environment reset")
@@ -565,7 +584,10 @@ def plot_rollout(
         loc="upper left",
         bbox_to_anchor=(1.01, 1.0),
         borderaxespad=0.0,
+        frameon=False,
+        fontsize=LEGEND_FONT_SIZE,
     )
+    style_axis(ax_belief)
 
     ax_action.step(
         x,
@@ -574,7 +596,7 @@ def plot_rollout(
         color="tab:green",
         linewidth=2.0,
         alpha=0.7,
-        label="agent action",
+        label=r"agent $a_t$",
     )
     ax_action.step(
         x,
@@ -584,14 +606,16 @@ def plot_rollout(
         linewidth=2.0,
         linestyle="--",
         alpha=0.6,
-        label="belief planner action",
+        label=r"planner $a_t$",
     )
     add_reset_markers(ax_action, rollout["terminal_after_step"])
     ax_action.set_ylim(-0.25, 2.25)
     ax_action.set_yticks([0, 1, 2])
-    ax_action.set_yticklabels(["listen", "open left", "open right"])
-    ax_action.set_ylabel("action")
-    ax_action.set_xlabel("step")
+    ax_action.set_yticklabels(
+        [r"$a_{\mathrm{listen}}$", r"$a_{\mathrm{openL}}$", r"$a_{\mathrm{openR}}$"]
+    )
+    ax_action.set_ylabel(r"$a_t$", fontsize=AXIS_LABEL_FONT_SIZE)
+    ax_action.set_xlabel("step", fontsize=AXIS_LABEL_FONT_SIZE)
     action_handles, action_labels = ax_action.get_legend_handles_labels()
     action_handles.append(reset_legend_handle())
     action_labels.append("environment reset")
@@ -601,7 +625,10 @@ def plot_rollout(
         loc="upper left",
         bbox_to_anchor=(1.01, 1.0),
         borderaxespad=0.0,
+        frameon=False,
+        fontsize=LEGEND_FONT_SIZE,
     )
+    style_axis(ax_action)
 
     ax_outcome.plot(
         x,
@@ -612,8 +639,8 @@ def plot_rollout(
         label=outcome_label,
     )
     add_reset_markers(ax_outcome, rollout["terminal_after_step"])
-    ax_outcome.set_ylabel("reward")
-    ax_outcome.set_xlabel("step")
+    ax_outcome.set_ylabel("reward", fontsize=AXIS_LABEL_FONT_SIZE)
+    ax_outcome.set_xlabel("step", fontsize=AXIS_LABEL_FONT_SIZE)
     outcome_handles, outcome_labels = ax_outcome.get_legend_handles_labels()
     outcome_handles.append(reset_legend_handle())
     outcome_labels.append("environment reset")
@@ -623,7 +650,10 @@ def plot_rollout(
         loc="upper left",
         bbox_to_anchor=(1.01, 1.0),
         borderaxespad=0.0,
+        frameon=False,
+        fontsize=LEGEND_FONT_SIZE,
     )
+    style_axis(ax_outcome)
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout(rect=(0.0, 0.0, 0.84, 1.0))

@@ -172,11 +172,27 @@ def find_protocol_b_files(report_root: Path, train_id: str) -> tuple[list[Path],
     return workbook_paths, belief_paths
 
 
-def choose_stage_map(episodes: list[int]) -> dict[int, str]:
+def choose_stage_map(episodes: list[int], intermediate_episode: int | None = None) -> dict[int, str]:
     unique = sorted({int(ep) for ep in episodes})
     if not unique:
         return {}
-    if len(unique) <= 3:
+
+    if intermediate_episode is not None:
+        if len(unique) < 3:
+            raise ValueError(
+                "Cannot choose an intermediate checkpoint when fewer than 3 distinct episodes are available."
+            )
+        if intermediate_episode not in unique:
+            raise ValueError(
+                f"Requested intermediate episode {intermediate_episode} is not available. "
+                f"Available episodes: {unique}"
+            )
+        if intermediate_episode == unique[0]:
+            raise ValueError("The intermediate episode cannot be the earliest checkpoint.")
+        if intermediate_episode == unique[-1]:
+            raise ValueError("The intermediate episode cannot be the final checkpoint.")
+        selected = [unique[0], int(intermediate_episode), unique[-1]]
+    elif len(unique) <= 3:
         selected = unique
     else:
         selected = [unique[0], unique[len(unique) // 2], unique[-1]]
@@ -296,7 +312,7 @@ def filter_to_families(df: pd.DataFrame, families: set[str]) -> pd.DataFrame:
     return df[df["task_name"].isin(keep)].copy()
 
 
-def normalize_sources(data: dict) -> dict:
+def normalize_sources(data: dict, intermediate_episode: int | None = None) -> dict:
     offline_df = data["offline"].copy()
     compound_df = data["compound"].copy()
     protocol_b_repr = data["protocol_b_repr"].copy()
@@ -363,7 +379,7 @@ def normalize_sources(data: dict) -> dict:
     ]:
         if not df.empty and col in df.columns:
             all_episode_candidates.extend(coerce_numeric(df[col]).dropna().astype(int).tolist())
-    stage_map = choose_stage_map(all_episode_candidates)
+    stage_map = choose_stage_map(all_episode_candidates, intermediate_episode=intermediate_episode)
     if not stage_map:
         raise ValueError("Could not infer checkpoint stages from the available results.")
 
@@ -1146,7 +1162,7 @@ def save_processed_tables(output_dir: Path, rep_sources: dict[str, pd.DataFrame]
 
 
 def write_manifest(output_dir: Path, *, run_root: Path, discovered: dict, stage_map: dict[int, str],
-                   families: list[str], base_task_value=None) -> None:
+                   families: list[str], base_task_value=None, intermediate_episode: int | None = None) -> None:
     payload = {
         "run_root": str(run_root),
         "train_id": discovered["train_id"],
@@ -1157,6 +1173,7 @@ def write_manifest(output_dir: Path, *, run_root: Path, discovered: dict, stage_
         "stage_map": {str(k): v for k, v in stage_map.items()},
         "families": families,
         "base_task_value": base_task_value,
+        "requested_intermediate_episode": intermediate_episode,
     }
     ensure_dir(output_dir)
     (output_dir / "figure_manifest.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1175,7 +1192,7 @@ def main(args):
         args.protocol_b_xlsx,
         args.protocol_b_belief_csv,
     )
-    normalized = normalize_sources(discovered)
+    normalized = normalize_sources(discovered, intermediate_episode=args.intermediate_episode)
     base_task_value = parse_base_task_value(args.base_task_value)
 
     rep_sources = {
@@ -1248,6 +1265,7 @@ def main(args):
         stage_map=stage_map,
         families=families,
         base_task_value=base_task_value,
+        intermediate_episode=args.intermediate_episode,
     )
     print(f"Saved comparison figures to: {figures_dir}", flush=True)
     print(f"Saved processed tables to: {processed_dir}", flush=True)
@@ -1267,5 +1285,7 @@ if __name__ == "__main__":
                         help="Optional explicit Protocol B belief summary CSV path(s).")
     parser.add_argument("--base-task-value", type=str, default=None,
                         help="Matched baseline task_value used when files do not contain an explicit base row.")
+    parser.add_argument("--intermediate-episode", type=int, default=None,
+                        help="Optional checkpoint to use as the shared 'Intermediate' stage across plots.")
     args = parser.parse_args()
     main(args)

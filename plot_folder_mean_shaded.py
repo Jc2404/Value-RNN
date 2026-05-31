@@ -161,6 +161,8 @@ def render_plot(
     ax.set_ylabel(y_label, fontsize=LABEL_FONT_SIZE)
     ax.tick_params(axis="both", labelsize=TICK_FONT_SIZE)
     ax.grid(False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
     fig.tight_layout()
     fig.savefig(png_path, dpi=300, bbox_inches="tight")

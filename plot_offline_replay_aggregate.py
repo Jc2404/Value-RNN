@@ -26,6 +26,8 @@ LEGEND_FONT_SIZE = 10
 BASE_MARKER = "o"
 BASE_MARKER_SIZE = 70
 BASE_LABEL = "Base environment"
+BASE_MARKER_COLOR = "red"
+BASE_REFERENCE_LINE_COLOR = "#808080"
 TASK_VALUE_DECIMALS = 12
 
 MI_LABEL = "Mutual Information"
@@ -40,6 +42,7 @@ class RunSummary:
     path: Path
     df: pd.DataFrame
     task_name: str
+    shared_episodes: tuple[int, ...]
     first_nonzero_episode: int
     final_episode: int
 
@@ -55,6 +58,8 @@ class PlotSpec:
     aggregate_fn: Callable[[list[RunSummary]], OrderedDict[str, pd.DataFrame]] | None = None
     base_marker_mode: str | None = None
     base_marker_series: str | None = None
+    base_highlight_style: str = "marker"
+    base_marker_color: str = BASE_MARKER_COLOR
     line_colors: tuple[str, ...] | None = None
     plot_style: str = "line"
 
@@ -68,7 +73,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-value", required=True, type=float)
     parser.add_argument("--output-dir", type=str, default=r"results\plots")
     parser.add_argument("--metrics", type=str, default=",".join(DEFAULT_METRICS))
-    parser.add_argument("--file-glob", type=str, default="offline_replay_summary*.csv")
+    parser.add_argument(
+        "--intermediate-episode",
+        type=int,
+        default=None,
+        help=(
+            "Optional checkpoint to use for 'Intermediate' in variant-evolution plots. "
+            "If omitted, the script keeps the current default behavior."
+        ),
+    )
+    parser.add_argument(
+        "--file-glob",
+        type=str,
+        default="offline_replay_summary*.csv,counterfactual_replay_summary*.csv",
+        help=(
+            "Comma-separated glob(s) used to discover summary CSVs under --input-dir. "
+            "Supports both legacy offline replay and counterfactual replay summaries."
+        ),
+    )
     parser.add_argument("--plot-sem", dest="plot_sem", action="store_true")
     parser.add_argument("--no-plot-sem", dest="plot_sem", action="store_false")
     parser.set_defaults(plot_sem=False)
@@ -147,9 +169,22 @@ def read_task_value_column(df: pd.DataFrame, column: str, csv_path: Path) -> pd.
 
 
 def discover_csv_paths(input_dir: Path, file_glob: str) -> list[Path]:
-    csv_paths = sorted(path for path in input_dir.rglob(file_glob) if path.is_file())
+    patterns = [token.strip() for token in str(file_glob).split(",") if token.strip()]
+    csv_paths = []
+    seen = set()
+    for pattern in patterns:
+        for path in sorted(input_dir.rglob(pattern)):
+            if not path.is_file():
+                continue
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            csv_paths.append(path)
     if not csv_paths:
-        raise FileNotFoundError(f"No files matching '{file_glob}' were found under {input_dir}.")
+        raise FileNotFoundError(
+            f"No files matching any of {patterns!r} were found under {input_dir}."
+        )
     return csv_paths
 
 
@@ -213,6 +248,7 @@ def load_run_summaries(
                 path=csv_path,
                 df=df,
                 task_name=task_name,
+                shared_episodes=tuple(shared_episodes),
                 first_nonzero_episode=first_nonzero_episode,
                 final_episode=final_episode,
             )
@@ -427,8 +463,6 @@ def add_base_markers(
     line_colors: dict[str, str],
     base_value: float,
 ) -> None:
-    first_marker = True
-
     if plot_spec.base_marker_mode == "all":
         labels_to_mark = [series_label for series_label, _ in plot_spec.series_order]
     elif plot_spec.base_marker_mode == "series" and plot_spec.base_marker_series is not None:
@@ -436,6 +470,7 @@ def add_base_markers(
     else:
         labels_to_mark = []
 
+    base_points: list[tuple[float, float]] = []
     for series_label in labels_to_mark:
         frame = aggregated_series[series_label]
         x_values = frame["x_value"].to_numpy(dtype=float)
@@ -447,10 +482,34 @@ def add_base_markers(
             )
         base_x = frame.loc[mask, "x_value"].iloc[0]
         base_y = frame.loc[mask, "mean"].iloc[0]
+        base_points.append((float(base_x), float(base_y)))
+
+    if not base_points:
+        return
+
+    if plot_spec.base_highlight_style == "vline":
+        base_x_values = [point[0] for point in base_points]
+        if not np.allclose(base_x_values, base_x_values[0]):
+            raise ValueError(
+                f"Aggregated plot '{plot_spec.name}' has inconsistent base x values "
+                f"across highlighted series: {base_x_values}"
+            )
+        ax.axvline(
+            base_x_values[0],
+            color=plot_spec.base_marker_color,
+            linestyle="--",
+            linewidth=1.6,
+            zorder=4,
+            label=BASE_LABEL,
+        )
+        return
+
+    first_marker = True
+    for base_x, base_y in base_points:
         ax.scatter(
             base_x,
             base_y,
-            color="red",
+            color=plot_spec.base_marker_color,
             s=BASE_MARKER_SIZE,
             marker=BASE_MARKER,
             zorder=5,
@@ -549,6 +608,8 @@ def render_plot(
     ax.set_xticks(sorted(set(xticks)))
     ax.tick_params(axis="both", labelsize=TICK_FONT_SIZE)
     ax.grid(False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
     if show_line_legend or plot_spec.base_marker_mode is not None:
         ax.legend(fontsize=LEGEND_FONT_SIZE, frameon=False)
@@ -691,11 +752,13 @@ def make_task_decoupling_builder(
 def make_variant_evolution_builder(
     metric_column: str,
     mode: str,
+    intermediate_episode: int | None = None,
 ) -> Callable[[RunSummary], OrderedDict[str, pd.Series]]:
     def builder(run: RunSummary) -> OrderedDict[str, pd.Series]:
+        chosen_intermediate = resolve_intermediate_episode(run, intermediate_episode)
         checkpoints = (
             ("Untrained", 0),
-            ("Intermediate", run.first_nonzero_episode),
+            ("Intermediate", chosen_intermediate),
             ("Trained", run.final_episode),
         )
         mapping: OrderedDict[str, pd.Series] = OrderedDict()
@@ -735,6 +798,29 @@ def make_variant_evolution_builder(
         return mapping
 
     return builder
+
+
+def resolve_intermediate_episode(run: RunSummary, intermediate_episode: int | None) -> int:
+    if intermediate_episode is None:
+        return run.first_nonzero_episode
+
+    available = set(run.shared_episodes)
+    if intermediate_episode not in available:
+        raise ValueError(
+            f"{run.path} does not contain shared generator/evaluator episode "
+            f"{intermediate_episode}. Available shared episodes: {list(run.shared_episodes)}"
+        )
+    if intermediate_episode == 0:
+        raise ValueError(
+            f"{run.path} cannot use 0 as the intermediate episode. "
+            "Choose a checkpoint strictly between untrained and trained."
+        )
+    if intermediate_episode == run.final_episode:
+        raise ValueError(
+            f"{run.path} cannot use the final shared episode {run.final_episode} as the "
+            "intermediate episode."
+        )
+    return int(intermediate_episode)
 
 
 def validate_unique_task_rows(
@@ -926,6 +1012,7 @@ def build_plot_specs(
     selected_metrics: tuple[str, ...],
     task_axis_label: str,
     base_value: float,
+    intermediate_episode: int | None = None,
 ) -> list[PlotSpec]:
     specs: list[PlotSpec] = []
     base_name = base_token(base_value)
@@ -1015,8 +1102,10 @@ def build_plot_specs(
                         ("Intermediate", "MI"),
                         ("Trained", "MI"),
                     ),
-                    builder=make_variant_evolution_builder("MI", "matched"),
+                    builder=make_variant_evolution_builder("MI", "matched", intermediate_episode),
                     base_marker_mode="all",
+                    base_highlight_style="vline",
+                    base_marker_color=BASE_REFERENCE_LINE_COLOR,
                     line_colors=EVOLUTION_COLORS,
                 ),
                 PlotSpec(
@@ -1029,8 +1118,10 @@ def build_plot_specs(
                         ("Intermediate", "MI"),
                         ("Trained", "MI"),
                     ),
-                    builder=make_variant_evolution_builder("MI", "fixed_trajectory"),
+                    builder=make_variant_evolution_builder("MI", "fixed_trajectory", intermediate_episode),
                     base_marker_mode="all",
+                    base_highlight_style="vline",
+                    base_marker_color=BASE_REFERENCE_LINE_COLOR,
                     line_colors=EVOLUTION_COLORS,
                 ),
                 PlotSpec(
@@ -1043,8 +1134,10 @@ def build_plot_specs(
                         ("Intermediate", "MI"),
                         ("Trained", "MI"),
                     ),
-                    builder=make_variant_evolution_builder("MI", "fixed_agent"),
+                    builder=make_variant_evolution_builder("MI", "fixed_agent", intermediate_episode),
                     base_marker_mode="all",
+                    base_highlight_style="vline",
+                    base_marker_color=BASE_REFERENCE_LINE_COLOR,
                     line_colors=EVOLUTION_COLORS,
                 ),
                 PlotSpec(
@@ -1145,8 +1238,14 @@ def build_plot_specs(
                         ("Intermediate", "softmax_linear_KL"),
                         ("Trained", "softmax_linear_KL"),
                     ),
-                    builder=make_variant_evolution_builder("softmax_linear_KL", "matched"),
+                    builder=make_variant_evolution_builder(
+                        "softmax_linear_KL",
+                        "matched",
+                        intermediate_episode,
+                    ),
                     base_marker_mode="all",
+                    base_highlight_style="vline",
+                    base_marker_color=BASE_REFERENCE_LINE_COLOR,
                     line_colors=EVOLUTION_COLORS,
                 ),
                 PlotSpec(
@@ -1159,8 +1258,14 @@ def build_plot_specs(
                         ("Intermediate", "softmax_linear_KL"),
                         ("Trained", "softmax_linear_KL"),
                     ),
-                    builder=make_variant_evolution_builder("softmax_linear_KL", "fixed_trajectory"),
+                    builder=make_variant_evolution_builder(
+                        "softmax_linear_KL",
+                        "fixed_trajectory",
+                        intermediate_episode,
+                    ),
                     base_marker_mode="all",
+                    base_highlight_style="vline",
+                    base_marker_color=BASE_REFERENCE_LINE_COLOR,
                     line_colors=EVOLUTION_COLORS,
                 ),
                 PlotSpec(
@@ -1173,8 +1278,14 @@ def build_plot_specs(
                         ("Intermediate", "softmax_linear_KL"),
                         ("Trained", "softmax_linear_KL"),
                     ),
-                    builder=make_variant_evolution_builder("softmax_linear_KL", "fixed_agent"),
+                    builder=make_variant_evolution_builder(
+                        "softmax_linear_KL",
+                        "fixed_agent",
+                        intermediate_episode,
+                    ),
                     base_marker_mode="all",
+                    base_highlight_style="vline",
+                    base_marker_color=BASE_REFERENCE_LINE_COLOR,
                     line_colors=EVOLUTION_COLORS,
                 ),
                 PlotSpec(
@@ -1187,8 +1298,14 @@ def build_plot_specs(
                         ("Intermediate", "softmax_mlp_KL"),
                         ("Trained", "softmax_mlp_KL"),
                     ),
-                    builder=make_variant_evolution_builder("softmax_mlp_KL", "matched"),
+                    builder=make_variant_evolution_builder(
+                        "softmax_mlp_KL",
+                        "matched",
+                        intermediate_episode,
+                    ),
                     base_marker_mode="all",
+                    base_highlight_style="vline",
+                    base_marker_color=BASE_REFERENCE_LINE_COLOR,
                     line_colors=EVOLUTION_COLORS,
                 ),
                 PlotSpec(
@@ -1201,8 +1318,14 @@ def build_plot_specs(
                         ("Intermediate", "softmax_mlp_KL"),
                         ("Trained", "softmax_mlp_KL"),
                     ),
-                    builder=make_variant_evolution_builder("softmax_mlp_KL", "fixed_trajectory"),
+                    builder=make_variant_evolution_builder(
+                        "softmax_mlp_KL",
+                        "fixed_trajectory",
+                        intermediate_episode,
+                    ),
                     base_marker_mode="all",
+                    base_highlight_style="vline",
+                    base_marker_color=BASE_REFERENCE_LINE_COLOR,
                     line_colors=EVOLUTION_COLORS,
                 ),
                 PlotSpec(
@@ -1215,8 +1338,14 @@ def build_plot_specs(
                         ("Intermediate", "softmax_mlp_KL"),
                         ("Trained", "softmax_mlp_KL"),
                     ),
-                    builder=make_variant_evolution_builder("softmax_mlp_KL", "fixed_agent"),
+                    builder=make_variant_evolution_builder(
+                        "softmax_mlp_KL",
+                        "fixed_agent",
+                        intermediate_episode,
+                    ),
                     base_marker_mode="all",
+                    base_highlight_style="vline",
+                    base_marker_color=BASE_REFERENCE_LINE_COLOR,
                     line_colors=EVOLUTION_COLORS,
                 ),
                 PlotSpec(
@@ -1342,7 +1471,12 @@ def main() -> None:
     run_summaries, task_name = load_run_summaries(csv_paths, selected_metrics, args.base_value)
     print(f"Loaded {len(run_summaries)} run summaries for task '{task_name}'.")
 
-    plot_specs = build_plot_specs(selected_metrics, args.task_axis_label, args.base_value)
+    plot_specs = build_plot_specs(
+        selected_metrics,
+        args.task_axis_label,
+        args.base_value,
+        intermediate_episode=args.intermediate_episode,
+    )
     if not plot_specs:
         raise ValueError("No plot specifications were created for the requested metric selection.")
 

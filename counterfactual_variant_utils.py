@@ -53,7 +53,7 @@ def pick_counterfactual_variants(train_args, args):
 
     if env_name == "tmaze":
         if args.test_length:
-            for length in [20, 30, 40, 50, 60]:
+            for length in [20, 30, 40, 50]:
                 variants.append((f"tmaze_length={length}", {"length": length}))
             _append_if_missing(
                 variants,
@@ -63,7 +63,7 @@ def pick_counterfactual_variants(train_args, args):
             return _dedupe_preserve_order(variants)
 
         if args.test_stochasticity:
-            for stochasticity in [0.1, 0.2, 0.3, 0.4, 0.5]:
+            for stochasticity in [0.1, 0.2, 0.3, 0.4]:
                 variants.append((f"tmaze_stochasticity={stochasticity}", {"stochasticity": stochasticity}))
             _append_if_missing(
                 variants,
