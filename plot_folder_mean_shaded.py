@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 
-FIGSIZE = (6, 4)
+FIGSIZE = (5, 10 / 3)
 LINEWIDTH = 2.0
 LABEL_FONT_SIZE = 14
 TICK_FONT_SIZE = 10

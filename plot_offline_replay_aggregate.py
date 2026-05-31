@@ -17,7 +17,7 @@ import pandas as pd
 DEFAULT_METRICS = ("MI", "softmax_linear_KL", "softmax_mlp_KL")
 REQUIRED_COLUMNS = ("generator_episode", "evaluator_episode", "task_name", "task_value")
 
-FIGSIZE = (6, 4)
+FIGSIZE = (5, 10 / 3)
 LINEWIDTH = 2.0
 FONT_SIZE = 14
 LABEL_FONT_SIZE = 14
@@ -595,6 +595,8 @@ def render_plot(
                     mean_values + sem_values,
                     color=plotted_color,
                     alpha=0.2,
+                    linewidth=0.0,
+                    edgecolor="none",
                 )
 
         line_colors[series_label] = plotted_color
