@@ -1,6 +1,6 @@
 # Recurrent Networks, Hidden States and Beliefs in Partially Observable Environments
 
-This is a MENG 4th year project, the reinforcement learning environment implementation is based on official implementation from [Lambrechts et al., *Recurrent Networks, Hidden States and Beliefs in Partially Observable Environments*](https://openreview.net/forum?id=dkHfV3wB2l), and extends it to study the robustness and interpretation of belief-like representations.
+This is a MENG 4th year project. The reinforcement learning environment implementation is based on official implementation from [Lambrechts et al., *Recurrent Networks, Hidden States and Beliefs in Partially Observable Environments*](https://openreview.net/forum?id=dkHfV3wB2l), and extends it to study the robustness and interpretation of belief-like representations.
 
 ## Main Contributions
 
